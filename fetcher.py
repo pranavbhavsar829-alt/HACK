@@ -40,6 +40,9 @@ def update_dashboard(status_text="IDLE"):
         print(f"Error writing dashboard: {e}")
 
 async def fetch_loop():
+    # --- FIX IS HERE: DECLARE GLOBAL AT THE TOP ---
+    global last_prediction 
+    
     ensure_setup()
     print("Bot Started.")
     
@@ -81,7 +84,6 @@ async def fetch_loop():
                                 prediction = ultraAIPredict(snapshot)
                                 next_issue = str(int(curr_issue) + 1)
                                 
-                                global last_prediction
                                 last_prediction = {
                                     "issue": next_issue,
                                     "label": prediction['finalDecision'],
