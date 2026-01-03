@@ -4,12 +4,13 @@ import secrets
 import os
 import json
 import functools
-from database_handler import create_connection, DB_PATH, ensure_setup
+import uuid
+from datetime import datetime, timedelta
+from database_handler import create_connection, DB_PATH, ensure_setup, cleanup_inactive_sessions
 
 app = Flask(__name__)
-# SECURITY SETTINGS
 app.secret_key = "TITAN_SECURE_KEY_CHANGE_THIS" 
-ADMIN_PASSWORD = "admin" # <--- SET YOUR ADMIN PASSWORD HERE
+ADMIN_PASSWORD = "pranav1920"  # <--- SET YOUR PASSWORD
 
 DASHBOARD_FILE = os.path.join(DB_PATH, 'dashboard_data.json')
 ensure_setup()
@@ -31,25 +32,70 @@ def admin_required(f):
         return f(*args, **kwargs)
     return wrapped
 
-# --- DB HELPERS ---
-def validate_key(key):
+# --- KEY & SESSION LOGIC ---
+def validate_key_and_login(key_input):
+    cleanup_inactive_sessions() # Remove stale users first
+    
     conn = create_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM access_keys WHERE key_code = ? AND is_active = 1", (key,))
-    valid = cur.fetchone() is not None
-    conn.close()
-    return valid
+    cur.execute("SELECT * FROM access_keys WHERE key_code = ? AND is_active = 1", (key_input,))
+    row = cur.fetchone()
+    
+    if not row:
+        conn.close()
+        return False, "INVALID KEY"
+        
+    # Check Expiration (Index 4)
+    expires_at = row[4]
+    if expires_at:
+        exp_date = datetime.strptime(expires_at, '%Y-%m-%d %H:%M:%S.%f')
+        if datetime.now() > exp_date:
+            conn.close()
+            return False, "KEY EXPIRED"
 
-def generate_key():
-    key = "KEY-" + secrets.token_hex(4).upper()
+    # Check Device Limit (Index 5 is max_devices)
+    max_devices = row[5] if len(row) > 5 else 1
+    
+    # Count current active sessions for this key
+    cur.execute("SELECT COUNT(*) FROM active_sessions WHERE key_code = ?", (key_input,))
+    current_users = cur.fetchone()[0]
+    
+    # If the user is already logged in (same session), don't block them
+    my_session_id = session.get('session_uuid')
+    
+    # Allow login if: Slots open OR I am already one of the active users
+    if current_users < max_devices or (my_session_id and check_is_active(my_session_id)):
+        # Register Session
+        new_uuid = my_session_id if my_session_id else str(uuid.uuid4())
+        session['session_uuid'] = new_uuid
+        conn.execute("INSERT OR REPLACE INTO active_sessions (session_id, key_code, last_seen) VALUES (?, ?, ?)", 
+                     (new_uuid, key_input, datetime.now()))
+        conn.commit()
+        conn.close()
+        return True, "OK"
+    else:
+        conn.close()
+        return False, f"MAX DEVICES REACHED ({current_users}/{max_devices})"
+
+def check_is_active(sess_id):
     conn = create_connection()
-    conn.execute("INSERT INTO access_keys (key_code, note) VALUES (?, ?)", (key, "Manual Gen"))
+    row = conn.execute("SELECT * FROM active_sessions WHERE session_id = ?", (sess_id,)).fetchone()
+    conn.close()
+    return row is not None
+
+def generate_key(days=30, max_dev=1, note="Generated"):
+    key = "KEY-" + secrets.token_hex(4).upper()
+    expiration_date = datetime.now() + timedelta(days=int(days))
+    conn = create_connection()
+    conn.execute("INSERT INTO access_keys (key_code, note, expires_at, max_devices) VALUES (?, ?, ?, ?)", 
+                 (key, note, expiration_date, int(max_dev)))
     conn.commit()
     conn.close()
 
 def revoke_key(key):
     conn = create_connection()
     conn.execute("DELETE FROM access_keys WHERE key_code = ?", (key,))
+    conn.execute("DELETE FROM active_sessions WHERE key_code = ?", (key,)) # Kick users
     conn.commit()
     conn.close()
 
@@ -60,11 +106,13 @@ def login():
     error = None
     if request.method == 'POST':
         key = request.form.get('key', '').strip()
-        if validate_key(key):
+        is_valid, msg = validate_key_and_login(key)
+        if is_valid:
             session['authenticated'] = True
+            session['user_key'] = key
             return redirect(url_for('index'))
         else:
-            error = "INVALID LICENSE KEY"
+            error = msg
     
     return f"""
     <body style="background:#000; color:#0f0; display:flex; justify-content:center; align-items:center; height:100vh; font-family:monospace;">
@@ -72,13 +120,24 @@ def login():
             <h1>🔒 SYSTEM LOCKED</h1>
             <p style="color:red">{error if error else ''}</p>
             <form method="post">
-                <input type="text" name="key" placeholder="ENTER LICENSE KEY" style="padding:10px; width:250px;">
+                <input type="text" name="key" placeholder="ENTER LICENSE KEY" style="padding:10px; width:250px; text-align:center;">
                 <br><br>
                 <button style="padding:10px 20px; font-weight:bold; cursor:pointer;">UNLOCK</button>
             </form>
         </div>
     </body>
     """
+
+@app.route('/heartbeat', methods=['POST'])
+def heartbeat():
+    if session.get('authenticated') and session.get('session_uuid'):
+        conn = create_connection()
+        conn.execute("UPDATE active_sessions SET last_seen = ? WHERE session_id = ?", 
+                     (datetime.now(), session['session_uuid']))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "ok"})
+    return jsonify({"status": "ignored"})
 
 @app.route('/admin_login', methods=['GET', 'POST'])
 def admin_login():
@@ -91,26 +150,63 @@ def admin_login():
 @app.route('/admin')
 @admin_required
 def admin_panel():
+    cleanup_inactive_sessions() # Clean list before showing
     conn = create_connection()
     keys = conn.execute("SELECT * FROM access_keys ORDER BY created_at DESC").fetchall()
+    
+    # Get active counts
+    active_counts = {}
+    sessions = conn.execute("SELECT key_code, COUNT(*) FROM active_sessions GROUP BY key_code").fetchall()
+    for s in sessions:
+        active_counts[s[0]] = s[1]
     conn.close()
-    rows = "".join([f"<tr><td>{k[0]}</td><td>{k[2]}</td><td><a href='/admin/del/{k[0]}' style='color:red'>REVOKE</a></td></tr>" for k in keys])
+    
+    rows = ""
+    for k in keys:
+        # k[0]=key, k[1]=note, k[4]=expires, k[5]=max_devices
+        expiry = k[4][:10] if k[4] else "Lifetime"
+        max_dev = k[5] if len(k) > 5 else 1
+        current = active_counts.get(k[0], 0)
+        
+        rows += f"""
+        <tr>
+            <td>{k[0]}</td>
+            <td>{k[1]}</td>
+            <td>{expiry}</td>
+            <td style="text-align:center;">{current} / {max_dev}</td>
+            <td><a href='/admin/del/{k[0]}' style='color:red'>REVOKE</a></td>
+        </tr>"""
+        
     return f"""
     <body style="font-family:monospace; padding:20px;">
         <h1>ADMIN PANEL</h1>
-        <a href="/admin/gen"><button>+ GENERATE NEW KEY</button></a>
+        
+        <div style="background:#eee; padding:15px; margin-bottom:20px; border:1px solid #ccc;">
+            <h3>GENERATE KEY</h3>
+            <form action="/admin/gen" method="POST">
+                Validity (Days): <input type="number" name="days" value="30" style="width:50px;">
+                Max Users: <input type="number" name="max_dev" value="1" style="width:50px;">
+                Note: <input type="text" name="note" placeholder="Client Name" style="width:150px;">
+                <button type="submit" style="background:#00ff41; border:none; padding:5px 10px; font-weight:bold; cursor:pointer;">CREATE</button>
+            </form>
+        </div>
+
         <a href="/"><button>VIEW DASHBOARD</button></a>
+        
         <table border="1" cellpadding="10" style="border-collapse:collapse; margin-top:20px; width:100%;">
-            <tr><th>KEY</th><th>CREATED</th><th>ACTION</th></tr>
+            <tr style="background:#ddd;"><th>KEY</th><th>NOTE</th><th>EXPIRES</th><th>USERS</th><th>ACTION</th></tr>
             {rows}
         </table>
     </body>
     """
 
-@app.route('/admin/gen')
+@app.route('/admin/gen', methods=['POST'])
 @admin_required
 def gen():
-    generate_key()
+    days = request.form.get('days', 30)
+    max_dev = request.form.get('max_dev', 1)
+    note = request.form.get('note', 'Manual')
+    generate_key(days, max_dev, note)
     return redirect(url_for('admin_panel'))
 
 @app.route('/admin/del/<k>')
@@ -121,6 +217,11 @@ def delete(k):
 
 @app.route('/logout')
 def logout():
+    if session.get('session_uuid'):
+        conn = create_connection()
+        conn.execute("DELETE FROM active_sessions WHERE session_id = ?", (session['session_uuid'],))
+        conn.commit()
+        conn.close()
     session.clear()
     return redirect(url_for('login'))
 
@@ -139,7 +240,6 @@ def data():
 def index():
     return render_template_string(HTML_TEMPLATE)
 
-# --- UI TEMPLATE ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -173,15 +273,18 @@ HTML_TEMPLATE = """
     </div>
 
     <script>
+        // HEARTBEAT SYSTEM (Keeps session alive)
+        setInterval(() => {
+            fetch('/heartbeat', { method: 'POST' });
+        }, 30000); // Ping every 30 seconds
+
         function update() {
             fetch('/data').then(r => r.json()).then(d => {
                 document.getElementById('period').innerText = "PERIOD: " + d.period;
                 document.getElementById('status').innerText = d.status_text || 'ACTIVE';
-                
                 const p = document.getElementById('prediction');
                 p.innerText = d.prediction;
                 p.className = 'pred-box ' + (d.prediction === 'BIG' ? 'big' : d.prediction === 'SMALL' ? 'small' : 'wait');
-
                 let histHtml = "";
                 if(d.history) {
                     d.history.forEach(h => {
