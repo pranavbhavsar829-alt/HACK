@@ -14,12 +14,13 @@ class GameConstants:
     SMALL = "SMALL" 
     SKIP = "SKIP"
     
-    # Ultra-Fast Start: Only needs 5 past results to start betting
-    MIN_HISTORY_FOR_PREDICTION = 5 
+    # MODIFIED: Reduced from 40 to 12. 
+    # This fixes the "Render" issue where it skips because it's waiting for data.
+    MIN_HISTORY_FOR_PREDICTION = 12 
     DEBUG_MODE = True
 
 # =============================================================================
-# SECTION 2: RISK CONFIGURATION (HYPER-ACTIVE MODE)
+# SECTION 2: RISK & SNIPER CONFIGURATION (SMART & BALANCED)
 # =============================================================================
 
 class RiskConfig:
@@ -31,28 +32,27 @@ class RiskConfig:
     MAX_BET_AMOUNT = 50000
     
     # -------------------------------------------------------------------------
-    # CONFIDENCE THRESHOLDS (REMOVED BARRIERS)
+    # CONFIDENCE THRESHOLDS (The "Smart Entry" Gate)
     # -------------------------------------------------------------------------
     
-    # LEVEL 1: Standard - NO BARRIER
-    # If we have 50.1% confidence, we take the bet.
-    LVL1_MIN_CONFIDENCE = 0.50 
+    # LEVEL 1: Standard
+    # RESTORED LOGIC: We only bet if we see an edge.
+    # Adjusted: 0.60 -> 0.55. (Takes "Good" trends, not just "Perfect" ones)
+    LVL1_MIN_CONFIDENCE = 0.55  
     
     # LEVEL 2: Recovery (After 1 Loss)
-    # Slight filter to ensure we don't double down on garbage.
-    LVL2_MIN_CONFIDENCE = 0.55 
+    LVL2_MIN_CONFIDENCE = 0.65  
     
     # LEVEL 3: SNIPER (After 2+ Losses)
-    # The "Must Win" layer.
-    LVL3_MIN_CONFIDENCE = 0.65 
+    LVL3_MIN_CONFIDENCE = 0.80  
 
     # -------------------------------------------------------------------------
-    # MARTINGALE STEPS (CLEAR WITHIN 3 LEVELS)
+    # MARTINGALE STEPS
     # -------------------------------------------------------------------------
     TIER_1_MULT = 1.0
-    TIER_2_MULT = 2.2   # Aggressive recovery to clear profit fast
-    TIER_3_MULT = 5.0   # The Final Shot (High multiplier to cover losses + profit)
-    STOP_LOSS_STREAK = 3 # Hard stop after Level 3
+    TIER_2_MULT = 2.1   # Strong Recovery to clear profit
+    TIER_3_MULT = 4.5   # The "Sniper" Shot (Max Win)
+    STOP_LOSS_STREAK = 3 
 
 # =============================================================================
 # SECTION 3: MATHEMATICAL UTILITIES
@@ -86,7 +86,11 @@ def calculate_stddev(data: List[float]) -> float:
     return math.sqrt(variance)
 
 def calculate_rsi(data: List[float], period: int = 14) -> float:
-    if len(data) < period + 1: return 50.0
+    # Adaptive Period: If we don't have enough data, use smaller period
+    if len(data) < period + 1: 
+        period = len(data) - 1
+        if period < 2: return 50.0
+        
     deltas = [data[i] - data[i-1] for i in range(1, len(data))]
     gains = [d if d > 0 else 0 for d in deltas]
     losses = [-d if d < 0 else 0 for d in deltas]
@@ -97,19 +101,21 @@ def calculate_rsi(data: List[float], period: int = 14) -> float:
     return 100.0 - (100.0 / (1.0 + rs))
 
 # =============================================================================
-# SECTION 4: THE TRIDENT ENGINES (ALWAYS ON)
+# SECTION 4: THE TRIDENT ENGINES (RESTORED SMART LOGIC)
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# ENGINE 1: QUANTUM AI (HIGH SENSITIVITY)
+# ENGINE 1: QUANTUM AI (ADAPTIVE BOLLINGER + DRAGON TRAP)
 # -----------------------------------------------------------------------------
 def engine_quantum_adaptive(history: List[Dict]) -> Optional[Dict]:
     """
-    Reacts to almost ANY market deviation.
+    The original "Smart" Engine. 
+    Detects Reversion but avoids the "Dragon" (Massive Trends).
     """
     try:
         numbers = [safe_float(d.get('actual_number')) for d in history[-30:]]
-        if len(numbers) < 5: return None
+        # FIXED: Now works with just 12 numbers (Render fix)
+        if len(numbers) < 12: return None
         
         mean = calculate_mean(numbers)
         std = calculate_stddev(numbers)
@@ -118,25 +124,31 @@ def engine_quantum_adaptive(history: List[Dict]) -> Optional[Dict]:
         current_val = numbers[-1]
         z_score = (current_val - mean) / std
         
-        # REMOVED DRAGON TRAP: We bet even during runs.
+        # DRAGON TRAP (SMART LOGIC): 
+        # If Z-Score > 2.6, the trend is too strong. We SKIP to be safe.
+        if abs(z_score) > 2.6:
+            return None 
         
-        strength = min(abs(z_score) / 1.5, 1.0) 
+        strength = min(abs(z_score) / 2.0, 1.0) 
         
-        # SUPER LOW THRESHOLD: 0.5
-        if z_score > 0.5:
+        # THRESHOLD: 1.5 (Standard Deviation)
+        if z_score > 1.5:
             return {'prediction': GameConstants.SMALL, 'weight': strength, 'source': f'Quantum(Z:{z_score:.1f})'}
-        elif z_score < -0.5:
+        elif z_score < -1.5:
             return {'prediction': GameConstants.BIG, 'weight': strength, 'source': f'Quantum(Z:{z_score:.1f})'}
             
         return None
     except: return None
 
 # -----------------------------------------------------------------------------
-# ENGINE 2: DEEP PATTERN V3 (RAPID FIRE)
+# ENGINE 2: DEEP PATTERN V3 (THE MEMORY)
 # -----------------------------------------------------------------------------
 def engine_deep_pattern_v3(history: List[Dict]) -> Optional[Dict]:
+    """
+    The "Pattern Hunter". Finds repeating sequences.
+    """
     try:
-        if len(history) < 10: return None
+        if len(history) < 20: return None
         
         outcomes = [get_outcome_from_number(d.get('actual_number')) for d in history]
         raw_str = ''.join(['B' if o==GameConstants.BIG else 'S' for o in outcomes if o])
@@ -144,8 +156,8 @@ def engine_deep_pattern_v3(history: List[Dict]) -> Optional[Dict]:
         best_signal = None
         highest_confidence = 0.0
         
-        # Scan very shallow patterns (immediate trends)
-        for depth in range(6, 2, -1):
+        # Scans for patterns length 3 to 10
+        for depth in range(10, 3, -1):
             curr_pattern = raw_str[-depth:]
             search_area = raw_str[:-1]
             
@@ -166,60 +178,72 @@ def engine_deep_pattern_v3(history: List[Dict]) -> Optional[Dict]:
             
             total_matches = count_b_next + count_s_next
             
-            if total_matches >= 1: # If we've seen this ONCE before, use it.
+            # Need at least 2 past matches to trust the pattern
+            if total_matches >= 2:
                 prob_b = count_b_next / total_matches
                 prob_s = count_s_next / total_matches
                 
                 imbalance = abs(prob_b - prob_s)
                 
-                if imbalance > highest_confidence: 
+                # We only want STRONG patterns (>70% probability)
+                if imbalance > highest_confidence and imbalance > 0.35: 
                     highest_confidence = imbalance
                     pred = GameConstants.BIG if prob_b > prob_s else GameConstants.SMALL
-                    best_signal = {'prediction': pred, 'weight': imbalance * 1.2, 'source': f'PatternV3-D{depth}'}
+                    # Weight boost for deeper patterns
+                    weight = imbalance * (1 + (depth * 0.15))
+                    best_signal = {'prediction': pred, 'weight': weight, 'source': f'PatternV3-D{depth}'}
                     
-                    if imbalance > 0.6: break
+                    if depth > 6 and imbalance > 0.8: break
 
         return best_signal
     except: return None
 
 # -----------------------------------------------------------------------------
-# ENGINE 3: NEURAL PERCEPTRON (ALWAYS VOTES)
+# ENGINE 3: NEURAL PERCEPTRON (THE MARKET SENSOR)
 # -----------------------------------------------------------------------------
 def engine_neural_perceptron(history: List[Dict]) -> Optional[Dict]:
     """
-    Forced to vote. No neutral zone.
+    Combines RSI, Momentum, and Reversion Logic.
     """
     try:
         numbers = [safe_float(d.get('actual_number')) for d in history[-40:]]
-        if len(numbers) < 10: return None
+        # FIXED: Now works with 15 numbers (Render fix)
+        if len(numbers) < 15: return None
         
+        # --- INPUTS ---
         rsi = calculate_rsi(numbers, 14)
         input_rsi = (rsi - 50) / 100.0 
         
-        fast_sma = calculate_mean(numbers[-5:])
-        slow_sma = calculate_mean(numbers[-20:])
+        # Momentum (Short vs Long Term)
+        short_window = min(len(numbers), 5)
+        long_window = min(len(numbers), 20)
+        
+        fast_sma = calculate_mean(numbers[-short_window:])
+        slow_sma = calculate_mean(numbers[-long_window:])
         input_mom = (fast_sma - slow_sma) / 10.0
         
+        # Reversion Input
         last_3 = [get_outcome_from_number(n) for n in numbers[-3:]]
         b_count = last_3.count(GameConstants.BIG)
         input_rev = (1.5 - b_count) / 5.0
         
-        w_rsi = -2.0 
-        w_mom = 1.5
-        w_rev = 1.2
+        # --- TUNED WEIGHTS (THE "PERFECT" LOGIC) ---
+        w_rsi = -1.6  
+        w_mom = 1.3
+        w_rev = 0.9
         
         z = (input_rsi * w_rsi) + (input_mom * w_mom) + (input_rev * w_rev)
         probability = sigmoid(z) 
         
-        # ALWAYS VOTE LOGIC
         dist_from_neutral = abs(probability - 0.5)
-        weight = max(dist_from_neutral * 4.0, 0.2) # Minimum weight ensuring it counts
         
-        if probability >= 0.5:
-            return {'prediction': GameConstants.BIG, 'weight': weight, 'source': f'Neural({probability:.2f})'}
-        else:
-            return {'prediction': GameConstants.SMALL, 'weight': weight, 'source': f'Neural({probability:.2f})'}
+        # Only vote if the Neural Net is confident (>55% or <45%)
+        if probability > 0.55:
+            return {'prediction': GameConstants.BIG, 'weight': dist_from_neutral * 2.5, 'source': f'Neural({probability:.2f})'}
+        elif probability < 0.45:
+            return {'prediction': GameConstants.SMALL, 'weight': dist_from_neutral * 2.5, 'source': f'Neural({probability:.2f})'}
             
+        return None
     except: return None
 
 # =============================================================================
@@ -247,6 +271,12 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
             
     streak = state_manager.loss_streak
     
+    # -------------------------------------------------------------------------
+    # RESTORED: "VIOLET GUARD" REMOVED
+    # -------------------------------------------------------------------------
+    # We removed the block on numbers 0 & 5. It will now analyze them properly 
+    # using the engines instead of blindly skipping.
+    
     # 2. Run Engines
     signals = []
     
@@ -265,70 +295,73 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
     
     total_score = big_score + small_score
 
-    # 4. FORCE BET PROTOCOL (If engines are somehow silent)
-    if total_score < 0.01:
-        # Default to Trend Following (Follow last result)
-        last_num = safe_float(history[-1]['actual_number'])
-        forced_pred = get_outcome_from_number(last_num)
-        
-        active_engine_names = ["FORCE_TREND"]
-        final_pred = forced_pred
-        confidence = 0.51 # Artificial confidence to force a bet
+    # SMART CHECK: If NO engine sees a pattern, we SKIP.
+    # We do NOT force a bet if the engines are silent. This keeps it "Smart".
+    if total_score < 0.15:
+         return {
+             'finalDecision': GameConstants.SKIP, 
+             'confidence': 0, 
+             'positionsize': 0, 
+             'level': 'NO_SIG', 
+             'reason': 'No Pattern Found', 
+             'topsignals': []
+         }
+         
+    # 4. Calculate Confidence
+    if big_score > small_score:
+        final_pred = GameConstants.BIG
+        confidence = big_score / total_score 
     else:
-        # Normal Logic
-        if big_score > small_score:
-            final_pred = GameConstants.BIG
-            confidence = big_score / total_score 
-        else:
-            final_pred = GameConstants.SMALL
-            confidence = small_score / total_score
-        
-        active_engine_names = [s['source'] for s in signals]
+        final_pred = GameConstants.SMALL
+        confidence = small_score / total_score
     
     confidence = min(confidence, 0.99)
     
     # 5. Determine Stake & Level
+    active_engine_names = [s['source'] for s in signals]
     stake = 0
     level = "SKIP"
     reason = f"Conf {confidence:.0%}"
     
     base_bet = max(current_bankroll * RiskConfig.BASE_RISK_PERCENT, RiskConfig.MIN_BET_AMOUNT)
     
-    # --- LOGIC GATE ---
+    # --- SMART LOGIC GATE ---
     
+    # SCENARIO: SNIPER (2+ Losses)
     if streak >= 2:
-        # SNIPER LEVEL (Level 3)
-        # We need slightly higher confidence, but still aggressive
         if confidence >= RiskConfig.LVL3_MIN_CONFIDENCE:
             stake = base_bet * RiskConfig.TIER_3_MULT
-            level = "🔥 LEVEL 3"
+            level = "🔥 SNIPER"
+            reason = "High Probability"
         else:
-             # If we are at Level 3 but confidence is low, we Force Bet anyway 
-             # because we need to recover. We switch to Pattern Following.
-             stake = base_bet * RiskConfig.TIER_3_MULT
-             level = "🔥 LVL3 FORCE"
-             reason = "Must Recover"
+            # Fallback for Recovery: If confidence is decent (70%), take a defensive shot
+            if confidence >= 0.70:
+                 stake = base_bet * RiskConfig.TIER_2_MULT
+                 level = "DEFENSIVE"
+                 reason = "Soft Recovery"
+            else:
+                level = "SKIP (Recov)"
+                reason = "Wait for Clarity"
             
+    # SCENARIO: RECOVERY (1 Loss)
     elif streak == 1:
-        # RECOVERY LEVEL (Level 2)
         if confidence >= RiskConfig.LVL2_MIN_CONFIDENCE:
             stake = base_bet * RiskConfig.TIER_2_MULT
-            level = "LEVEL 2"
+            level = "RECOVERY"
         else:
-            # Force bet on Level 2 to keep momentum
-            stake = base_bet * RiskConfig.TIER_2_MULT
-            level = "LVL 2 FORCE"
+            level = "SKIP (Recov)"
     
+    # SCENARIO: STANDARD (0 Losses)
     else:
-        # STANDARD LEVEL (Level 1)
-        # ALWAYS BET if confidence > 0.5
+        # HERE IS THE BALANCE:
+        # We take the bet if Confidence > 55%.
+        # This filters out "Coin Flips" (50/50) but takes "Good Trends".
         if confidence >= RiskConfig.LVL1_MIN_CONFIDENCE:
             stake = base_bet * RiskConfig.TIER_1_MULT
-            level = "LEVEL 1"
+            level = "STANDARD"
         else:
-            # This should rarely happen with the new settings
-            stake = base_bet * RiskConfig.TIER_1_MULT
-            level = "LVL 1 FORCE"
+            level = "SKIP"
+            reason = "Low Edge (<55%)"
             
     if stake > current_bankroll * 0.5: stake = current_bankroll * 0.5
     
@@ -342,4 +375,4 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
     }
 
 if __name__ == "__main__":
-    print("TITAN V300 HYPER-ACTIVE LOADED.")
+    print("TITAN V202 BALANCED MODE LOADED.")
