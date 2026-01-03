@@ -1,5 +1,5 @@
 # ==============================================================================
-# MODULE: FETCHER.PY (UNIVERSAL COMPATIBILITY FIX)
+# MODULE: FETCHER.PY (TIMER FIX APPLIED)
 # ==============================================================================
 
 import aiohttp
@@ -14,23 +14,19 @@ from datetime import datetime
 
 # --- 1. ROBUST IMPORT SECTION ---
 try:
-    # We ONLY import the main function. We do not import 'getoutcome' to avoid errors.
     from prediction_engine import ultraAIPredict
     print("[INIT] TITAN V500 Engine Linked Successfully.")
 except ImportError as e:
     print(f"\n[CRITICAL ERROR] prediction_engine.py import failed: {e}")
     sys.exit()
 
-# --- 2. LOCAL HELPER FUNCTIONS (PREVENTS IMPORT ERRORS) ---
-# We define these locally so fetcher.py never breaks if the engine changes.
-
+# --- 2. LOCAL HELPER FUNCTIONS ---
 class GameConstants:
     BIG = "BIG"
     SMALL = "SMALL"
     SKIP = "SKIP"
 
 def get_outcome_from_number(n):
-    """Determines outcome locally to avoid import dependency."""
     try:
         val = int(float(n))
         if 0 <= val <= 4: return "SMALL"
@@ -53,14 +49,15 @@ DB_FILE = 'ar_lottery_history.db'
 DASHBOARD_FILE = 'dashboard_data.json'
 
 RAM_HISTORY = deque(maxlen=HISTORY_LIMIT)
-UI_HISTORY = deque(maxlen=7) # Stores last 7 results for UI
+UI_HISTORY = deque(maxlen=7) 
 
 currentbankroll = 10000.0 
 last_prediction = {"issue": None, "label": "WAITING", "stake": 0, "conf": 0, "level": "---"}
 last_win_status = "NONE"
 
-# --- 4. UI BRIDGE FUNCTION ---
-def update_dashboard(status_text="IDLE"):
+# --- 4. UI BRIDGE FUNCTION (FIXED) ---
+# We added 'timer_val' here so the UI knows how many seconds are left
+def update_dashboard(status_text="IDLE", timer_val=0):
     data = {
         "period": last_prediction['issue'] if last_prediction['issue'] else "---",
         "prediction": last_prediction['label'],
@@ -70,10 +67,12 @@ def update_dashboard(status_text="IDLE"):
         "bankroll": currentbankroll,
         "lastresult_status": last_win_status,
         "status_text": status_text,
+        "timer": timer_val,  # <--- THIS WAS MISSING
         "history": list(UI_HISTORY),
         "timestamp": time.time()
     }
     try:
+        # Atomic write to prevent reading half-written files
         with open(DASHBOARD_FILE + ".tmp", "w") as f:
             json.dump(data, f)
         os.replace(DASHBOARD_FILE + ".tmp", DASHBOARD_FILE)
@@ -147,7 +146,7 @@ async def main_loop():
     global currentbankroll, last_prediction, last_win_status
     
     print("================================================================")
-    print("   TITAN V500 - UI SERVER CONNECTED (UNIVERSAL FIX)")
+    print("   TITAN V500 - UI SERVER CONNECTED (TIMER FIXED)")
     print("================================================================")
     
     last_processed_issue = None
@@ -157,7 +156,8 @@ async def main_loop():
         await load_initial_history()
         
         while True:
-            update_dashboard("FETCHING...")
+            # Send 0 timer while fetching
+            update_dashboard("FETCHING...", 0) 
             raw_list = await fetch_latest_data(session)
             
             if raw_list:
@@ -180,8 +180,6 @@ async def main_loop():
                         
                         is_win = False
                         if predicted == real_outcome: is_win = True
-                        
-                        # Handle Green/Red logic if engine returns colors
                         if predicted in ["RED", "GREEN"]:
                             real_c = "RED" if curr_code in [0,2,4,6,8] else "GREEN"
                             if curr_code == 5: real_c = "GREEN"
@@ -209,20 +207,20 @@ async def main_loop():
                             })
                             print(f"\n[LOSS] {curr_issue}={curr_code} ({real_outcome}) | -${stake:.0f}")
                     
-                    # 3. Wait
+                    # 3. Wait Loop (With Timer Updates)
                     next_issue = str(int(curr_issue) + 1)
                     print(f"[WAIT] Target: {next_issue}")
                     
+                    # This loop now pushes the 'i' value to the dashboard file
                     for i in range(TACTICAL_DELAY_SECONDS, 0, -1):
-                        update_dashboard(f"WAITING... {i}s")
+                        update_dashboard(f"WAITING... {i}s", i)
                         await asyncio.sleep(1)
 
                     # 4. Predict
-                    update_dashboard("CALCULATING...")
+                    update_dashboard("CALCULATING...", 0)
                     snapshot = list(RAM_HISTORY)
                     if len(snapshot) > 10:
                         try:
-                            # CALL ENGINE
                             ai_result = ultraAIPredict(
                                 history=snapshot, 
                                 currentbankroll=currentbankroll, 
@@ -243,10 +241,10 @@ async def main_loop():
                             }
                             
                             print(f"[PRED] {decision} | {conf:.1%} | ${stake} | {ai_result.get('reason', '')}")
-                            update_dashboard("ACTIVE")
+                            update_dashboard("ACTIVE", 0)
                         except Exception as e:
                             print(f"[ERROR] Prediction Engine Failed: {e}")
-                            update_dashboard("ENGINE ERROR")
+                            update_dashboard("ENGINE ERROR", 0)
                     
                     last_processed_issue = curr_issue
 
