@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 =============================================================================
-TITAN V700 - SOVEREIGN EDITION (FULL INTEGRATION)
+TITAN V700 - SOVEREIGN EDITION (AGGRESSIVE ACCURACY FIX)
 =============================================================================
 Logic Stack:
 1. CORE ENGINES: Trend, Reversion, Neuren (Velocity), Qaum (Chaos)
 2. FRACTAL LAYER: Historical Pattern Matching (Replay)
-3. SUPERVISOR 1 (Monitor): Volatility & Choppiness Detection (Force SKIP)
-4. SUPERVISOR 2 (Manager): Individual Engine Banning/Recovery
+3. SUPERVISOR 1 (Monitor): RELAXED Volatility Check (Less Skips)
+4. SUPERVISOR 2 (Manager): INCREASED Tolerance (Bans after 5 losses)
 5. GHOST PROTOCOL: Inversion Logic (Bet Opposite on losing streaks)
 6. DYNAMIC MONEY: House Money vs. Defensive Mode
 =============================================================================
@@ -35,7 +35,8 @@ class RiskProfile:
     max_risk_percent: float = 0.15        
     min_bet_amount: float = 10.0
     max_bet_amount: float = 50000.0
-    stop_loss_streak: int = 6             
+    # FIX 1: Increased tolerance. Engines stay alive longer.
+    stop_loss_streak: int = 5             
     martingale_multiplier: float = 2.0    
 
 @dataclass
@@ -173,7 +174,10 @@ class Engines:
     def qaum_engine(numbers: List[float]) -> float:
         if len(numbers) < 5: return 0.0
         recent = numbers[-4:]
-        variance = statistics.pvariance(recent)
+        try:
+            variance = statistics.pvariance(recent)
+        except: return 0.0 # Handle rare math errors
+        
         if variance < 0.8:
             return 1.0 if (sum(recent)/len(recent)) < 4.5 else -1.0        
         return 0.0
@@ -186,16 +190,17 @@ class MarketMonitor:
     @staticmethod
     def check_volatility(numbers: List[float]) -> Tuple[bool, str]:
         if len(numbers) < 10: return False, "OK"
-        recent = numbers[-6:]
+        
+        # FIX 2: Relaxed Volatility.
+        # We look at last 8 numbers. We only skip if it is PURE CHAOS.
+        recent = numbers[-8:]
         
         # 1. Ping Pong Check (0,1,0,1,0...)
         binary = [0 if x <= 4 else 1 for x in recent]
         switches = sum(1 for i in range(len(binary)-1) if binary[i] != binary[i+1])
-        if switches >= 5: return True, "MAX_CHOPPINESS"
-
-        # 2. Velocity Check (0->9->0->8)
-        diffs = [abs(recent[i] - recent[i-1]) for i in range(1, len(recent))]
-        if (sum(diffs) / len(diffs)) > 6.0: return True, "EXTREME_VELOCITY"
+        
+        # Max possible switches in 8 items is 7. We only stop if it switches EVERY time.
+        if switches >= 7: return True, "EXTREME_CHOP"
 
         return False, "SAFE"
 
@@ -215,14 +220,15 @@ class EngineManager:
             if engine.last_vote == actual:
                 # WON
                 if engine.consecutive_losses > 0: engine.consecutive_losses -= 1
-                if not engine.is_active and engine.consecutive_losses < 2:
+                # Recovery: Unban quickly if it gets 1 right
+                if not engine.is_active:
                     print(f"[MANAGER] {name.upper()} Recovered. UNBANNED.")
                     engine.is_active = True
             else:
                 # LOST
                 engine.consecutive_losses += 1
-                if engine.is_active and engine.consecutive_losses >= 3:
-                    print(f"[MANAGER] {name.upper()} Failed 3x. BANNED.")
+                if engine.is_active and engine.consecutive_losses >= config.stop_loss_streak:
+                    print(f"[MANAGER] {name.upper()} Failed {config.stop_loss_streak}x. BANNED.")
                     engine.is_active = False
 
 # =============================================================================
@@ -266,16 +272,20 @@ class VotingCouncil:
         if active_weight_sum == 0:
             return TradeDecision.SKIP, 0.0, ["ALL_ENGINES_DEAD"]
             
-        # Normalize Score
-        normalized_score = score / 2.5  # Divisor to scale roughly to -1..1 range
+        # Normalize Score (Scale roughly to -1..1 range)
+        normalized_score = score / 2.5 
         
         decision = TradeDecision.SKIP
         conf = 0.0
         
-        if normalized_score >= 1.0:
+        # FIX 3: LOWERED THRESHOLD (1.0 -> 0.6)
+        # This allows trades when only moderate consensus is found.
+        THRESHOLD = 0.6
+        
+        if normalized_score >= THRESHOLD:
             decision = TradeDecision.BIG
             conf = min(0.6 + (normalized_score/5), 0.98)
-        elif normalized_score <= -1.0:
+        elif normalized_score <= -THRESHOLD:
             decision = TradeDecision.SMALL
             conf = min(0.6 + (abs(normalized_score)/5), 0.98)
             
@@ -337,12 +347,12 @@ def ultraAIPredict(history: List[Dict], currentbankroll: float, lastresult: Opti
     # --- PHASE 3: SAFETY CHECKS ---
     if state.cooling_off_counter > 0:
         state.cooling_off_counter -= 1
-        return {'finalDecision': "SKIP", 'confidence': 0, 'positionsize': 0, 
-                'level': "COOLING", 'reason': f"Wait ({state.cooling_off_counter}s)", 'topsignals': []}
+        # Removing the "Return Skip" allows aggressive recovery
+        # but for safety, we just reduce the count and let it try to trade if strong enough.
                 
     is_unsafe, vol_reason = MarketMonitor.check_volatility(clean_nums)
     if is_unsafe:
-        state.cooling_off_counter = 2
+        state.cooling_off_counter = 1
         return {'finalDecision': "SKIP", 'confidence': 0, 'positionsize': 0, 
                 'level': "DANGER", 'reason': f"Volatile: {vol_reason}", 'topsignals': ["MARKET_UNSAFE"]}
 
@@ -401,4 +411,4 @@ def ultraAIPredict(history: List[Dict], currentbankroll: float, lastresult: Opti
     }
 
 if __name__ == "__main__":
-    print("TITAN V700 SOVEREIGN (FULL UNCOMPRESSED) LOADED.")
+    print("TITAN V700 SOVEREIGN (AGGRESSIVE ACCURACY) LOADED.")
