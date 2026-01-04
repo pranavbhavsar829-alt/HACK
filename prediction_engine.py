@@ -1,34 +1,28 @@
 #!/usr/bin/env python3
 """
 =============================================================================
-TITAN V500 - SOVEREIGN EDITION (RENDER CALIBRATED)
+TITAN V700 - SOVEREIGN EDITION (FULL INTEGRATION)
 =============================================================================
-Codename: "PROMETHEUS-LIVE"
-Version: 5.1.0 (Server Optimized)
-Target: High-Frequency Prediction Markets
-
-CHANGELOG:
-- Logic: PRESERVED (Exact same Math/Engines as Original)
-- Thresholds: CALIBRATED for Cold Starts (Prevents infinite SKIP loop)
-- State: Hardened against server restarts
+Logic Stack:
+1. CORE ENGINES: Trend, Reversion, Neuren (Velocity), Qaum (Chaos)
+2. FRACTAL LAYER: Historical Pattern Matching (Replay)
+3. SUPERVISOR 1 (Monitor): Volatility & Choppiness Detection (Force SKIP)
+4. SUPERVISOR 2 (Manager): Individual Engine Banning/Recovery
+5. GHOST PROTOCOL: Inversion Logic (Bet Opposite on losing streaks)
+6. DYNAMIC MONEY: House Money vs. Defensive Mode
 =============================================================================
 """
 
 import math
 import statistics
-import time
-import random
 import logging
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
-# =============================================================================
-# SECTION 1: SYSTEM CONFIGURATION & CONSTANTS
-# =============================================================================
-
+# --- CONFIGURATION ---
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
-logger = logging.getLogger("TITAN_CORE")
+logger = logging.getLogger("TITAN_V700")
 
 class TradeDecision(Enum):
     BIG = "BIG"
@@ -37,63 +31,66 @@ class TradeDecision(Enum):
 
 @dataclass
 class RiskProfile:
-    """Configuration for Risk Management"""
     base_risk_percent: float = 0.05       
     max_risk_percent: float = 0.15        
     min_bet_amount: float = 10.0
     max_bet_amount: float = 50000.0
     stop_loss_streak: int = 6             
     martingale_multiplier: float = 2.0    
-    
+
 @dataclass
-class EngineWeights:
-    """Voting Power of each Engine"""
-    reversion: float = 1.5
-    trend: float = 1.2
-    neuren: float = 3.0      
-    qaum: float = 3.5        
-    pattern: float = 1.0
+class EngineState:
+    """Tracks the health of a specific engine"""
+    name: str
+    weight: float
+    consecutive_losses: int = 0
+    is_active: bool = True
+    last_vote: Optional[TradeDecision] = None 
 
 class GlobalState:
     """Persistent State across prediction cycles"""
     def __init__(self):
+        # Streak Tracking
         self.loss_streak: int = 0
-        # Start with a high skip streak to force early calibration if needed
-        self.skip_streak: int = 2 
-        self.last_prediction: Optional[TradeDecision] = None
-        self.last_confidence: float = 0.0
         self.total_wins: int = 0
         self.total_losses: int = 0
-        self.bankroll_history: List[float] = []
-
-    def update_after_round(self, won: bool):
-        if won:
-            self.loss_streak = 0
-            self.total_wins += 1
-            self.skip_streak = 0
-        else:
-            self.loss_streak += 1
-            self.total_losses += 1
+        
+        # Volatility Management
+        self.cooling_off_counter: int = 0  # Rounds to force SKIP
+        
+        # Ghost Protocol (Inversion)
+        self.inversion_mode: bool = False
+        self.consecutive_fails: int = 0    # Fails of "Normal" logic
+        
+        # Session Money Management
+        self.session_start_bankroll: float = 0.0
+        self.current_profit: float = 0.0
+        
+        # Engine Manager (The Council)
+        self.engines: Dict[str, EngineState] = {
+            'trend': EngineState('trend', 1.2),
+            'reversion': EngineState('reversion', 1.5),
+            'neuren': EngineState('neuren', 3.0),
+            'qaum': EngineState('qaum', 3.5),
+            'fractal': EngineState('fractal', 2.5) # High weight for patterns
+        }
+        
+        self.last_prediction: Optional[TradeDecision] = None
+        self.last_confidence: float = 0.0
 
 # Initialize Global State
 state = GlobalState()
 config = RiskProfile()
-weights = EngineWeights()
 
 # =============================================================================
-# SECTION 2: ADVANCED MATHEMATICS LIBRARY
+# SECTION 1: MATH & PATTERN LIBRARY
 # =============================================================================
 
 class MathLib:
-    """Dedicated Mathematical Operations"""
-    
     @staticmethod
     def safe_float(value: Any) -> Optional[float]:
         try:
-            if value is None: return None
-            v = float(value)
-            if math.isnan(v): return None
-            return v
+            return float(value) if value is not None else None
         except: return None
 
     @staticmethod
@@ -102,78 +99,60 @@ class MathLib:
         try:
             mean = statistics.mean(data)
             stdev = statistics.pstdev(data)
-            if stdev == 0: return 0.0
-            return (data[-1] - mean) / stdev
+            return (data[-1] - mean) / stdev if stdev != 0 else 0.0
         except: return 0.0
-
-    @staticmethod
-    def calculate_entropy(data: List[float]) -> float:
-        if not data: return 0.0
-        counts = {}
-        for x in data:
-            counts[x] = counts.get(x, 0) + 1
-        probs = [c / len(data) for c in counts.values()]
-        return -sum(p * math.log2(p) for p in probs)
 
     @staticmethod
     def get_derivative(data: List[float], order: int = 1) -> float:
         if len(data) < order + 1: return 0.0
-        
         current = data
         for _ in range(order):
-            new_data = []
-            for i in range(len(current) - 1):
-                new_data.append(current[i+1] - current[i])
-            current = new_data
-            
+            current = [current[i+1] - current[i] for i in range(len(current) - 1)]
         return current[-1] if current else 0.0
 
-# =============================================================================
-# SECTION 3: DATA PROCESSING LAYER
-# =============================================================================
-
-class DataProcessor:
+class FractalLib:
     @staticmethod
-    def process_history(history: List[Dict], limit: int = 100) -> Tuple[List[float], List[str]]:
-        clean_nums = []
-        raw_outcomes = []
-        
-        for item in reversed(history):
-            val = MathLib.safe_float(item.get('actual_number'))
-            if val is not None:
-                clean_nums.append(val)
-                if 0 <= int(val) <= 4: raw_outcomes.append(TradeDecision.SMALL.value)
-                elif 5 <= int(val) <= 9: raw_outcomes.append(TradeDecision.BIG.value)
+    def search_pattern(outcomes: List[str], full_history: List[str]) -> float:
+        """Scans full history for the last 6 outcomes."""
+        PATTERN_SIZE = 6
+        if len(outcomes) < PATTERN_SIZE or len(full_history) < 100:
+            return 0.0
             
-            if len(clean_nums) >= limit:
-                break
-                
-        return list(reversed(clean_nums)), list(reversed(raw_outcomes))
+        current_pattern = outcomes[-PATTERN_SIZE:] 
+        match_count = 0
+        big_next = 0
+        
+        # Limit scan to last 2000 rounds for speed
+        scan_history = full_history[-2000:]
+        
+        for i in range(len(scan_history) - PATTERN_SIZE - 1):
+            if scan_history[i : i+PATTERN_SIZE] == current_pattern:
+                match_count += 1
+                if scan_history[i + PATTERN_SIZE] == "BIG":
+                    big_next += 1
+        
+        if match_count < 3: return 0.0
+        
+        big_prob = big_next / match_count
+        if big_prob > 0.75: return 1.0     # Strong BIG Pattern
+        if big_prob < 0.25: return -1.0    # Strong SMALL Pattern
+        return 0.0
 
 # =============================================================================
-# SECTION 4: THE PREDICTION ENGINES (LOGIC PRESERVED)
+# SECTION 2: THE ENGINES
 # =============================================================================
 
 class Engines:
-    # --- ENGINE 1: STANDARD TREND ---
     @staticmethod
     def trend_engine(outcomes: List[str]) -> float:
         if len(outcomes) < 5: return 0.0
         last_4 = outcomes[-4:]
-        bigs = last_4.count("BIG")
-        smalls = last_4.count("SMALL")
-        
-        if bigs == 4: return 1.0     
-        if smalls == 4: return -1.0  
-        
-        if len(outcomes) >= 4:
-            pat = outcomes[-4:]
-            if pat == ['BIG', 'SMALL', 'BIG', 'SMALL']: return 1.0 
-            if pat == ['SMALL', 'BIG', 'SMALL', 'BIG']: return -1.0 
-            
+        if last_4.count("BIG") == 4: return 1.0     
+        if last_4.count("SMALL") == 4: return -1.0  
+        if last_4 == ['BIG', 'SMALL', 'BIG', 'SMALL']: return 1.0 
+        if last_4 == ['SMALL', 'BIG', 'SMALL', 'BIG']: return -1.0 
         return 0.0
 
-    # --- ENGINE 2: REVERSION ---
     @staticmethod
     def reversion_engine(numbers: List[float]) -> float:
         if len(numbers) < 15: return 0.0
@@ -182,174 +161,244 @@ class Engines:
         elif z < -2.0: return 1.0
         return 0.0
 
-    # --- ENGINE 3: NEUREN (VELOCITY) ---
     @staticmethod
     def neuren_engine(numbers: List[float]) -> float:
         if len(numbers) < 6: return 0.0
-        accel = MathLib.get_derivative(numbers, 2)
         jerk = MathLib.get_derivative(numbers, 3)
-        
         if jerk > 5.0: return -1.0  
         if jerk < -5.0: return 1.0  
-        if accel > 3.0: return -0.5
-        if accel < -3.0: return 0.5
         return 0.0
 
-    # --- ENGINE 4: QAUM (CHAOS) ---
     @staticmethod
     def qaum_engine(numbers: List[float]) -> float:
         if len(numbers) < 5: return 0.0
         recent = numbers[-4:]
         variance = statistics.pvariance(recent)
-        
         if variance < 0.8:
-            avg = sum(recent) / len(recent)
-            if avg < 4.5: return 1.0 
-            else: return -1.0        
+            return 1.0 if (sum(recent)/len(recent)) < 4.5 else -1.0        
         return 0.0
 
 # =============================================================================
-# SECTION 5: BANKROLL MANAGER
+# SECTION 3: SUPERVISORS (Monitor & Manager)
 # =============================================================================
 
-class BankrollManager:
+class MarketMonitor:
     @staticmethod
-    def get_stake(bankroll: float, confidence: float, streak: int) -> Tuple[float, str]:
-        base_unit = max(bankroll * config.base_risk_percent, config.min_bet_amount)
+    def check_volatility(numbers: List[float]) -> Tuple[bool, str]:
+        if len(numbers) < 10: return False, "OK"
+        recent = numbers[-6:]
         
-        if streak >= config.stop_loss_streak:
-            return config.min_bet_amount, "STOP_LOSS_RESET"
+        # 1. Ping Pong Check (0,1,0,1,0...)
+        binary = [0 if x <= 4 else 1 for x in recent]
+        switches = sum(1 for i in range(len(binary)-1) if binary[i] != binary[i+1])
+        if switches >= 5: return True, "MAX_CHOPPINESS"
+
+        # 2. Velocity Check (0->9->0->8)
+        diffs = [abs(recent[i] - recent[i-1]) for i in range(1, len(recent))]
+        if (sum(diffs) / len(diffs)) > 6.0: return True, "EXTREME_VELOCITY"
+
+        return False, "SAFE"
+
+class EngineManager:
+    @staticmethod
+    def update_performance(last_result_str: str):
+        """Updates win/loss for each engine and bans/unbans them."""
+        actual = None
+        if last_result_str == "BIG": actual = TradeDecision.BIG
+        elif last_result_str == "SMALL": actual = TradeDecision.SMALL
+        else: return # Ignore 0/5 (Green/Violet) or Errors
+        
+        for name, engine in state.engines.items():
+            if engine.last_vote is None or engine.last_vote == TradeDecision.SKIP:
+                continue
             
-        if streak == 0:
-            multiplier = 1.0
-            if confidence > 0.85: multiplier = 1.2
-            if confidence > 0.90: multiplier = 1.5
-            stake = base_unit * multiplier
-            return min(stake, config.max_bet_amount), "SNIPER_ENTRY"
-        else:
-            multiplier = config.martingale_multiplier ** streak
-            stake = base_unit * multiplier
-            stake = min(stake, config.max_bet_amount)
-            
-            if stake > (bankroll * 0.20):
-                stake = bankroll * 0.20
-                return stake, "PANIC_CLAMP"
-            return stake, f"RECOVERY_L{streak}"
+            if engine.last_vote == actual:
+                # WON
+                if engine.consecutive_losses > 0: engine.consecutive_losses -= 1
+                if not engine.is_active and engine.consecutive_losses < 2:
+                    print(f"[MANAGER] {name.upper()} Recovered. UNBANNED.")
+                    engine.is_active = True
+            else:
+                # LOST
+                engine.consecutive_losses += 1
+                if engine.is_active and engine.consecutive_losses >= 3:
+                    print(f"[MANAGER] {name.upper()} Failed 3x. BANNED.")
+                    engine.is_active = False
 
 # =============================================================================
-# SECTION 6: THE VOTING COUNCIL (CALIBRATED FOR SERVER)
+# SECTION 4: VOTING COUNCIL
 # =============================================================================
 
 class VotingCouncil:
-    """Aggregates votes - TUNED FOR LIVE SERVER EXECUTION"""
-    
     def cast_votes(self, numbers: List[float], outcomes: List[str]) -> Tuple[TradeDecision, float, List[str]]:
-        
         score = 0.0
         reasons = []
         
-        v_trend = Engines.trend_engine(outcomes)
-        score += v_trend * weights.trend
-        if v_trend != 0: reasons.append(f"Trend({v_trend:+.1f})")
+        # 1. Collect All Votes
+        raw_votes = {
+            'trend': Engines.trend_engine(outcomes),
+            'reversion': Engines.reversion_engine(numbers),
+            'neuren': Engines.neuren_engine(numbers),
+            'qaum': Engines.qaum_engine(numbers),
+            'fractal': FractalLib.search_pattern(outcomes, outcomes) # Pass full history
+        }
         
-        v_rev = Engines.reversion_engine(numbers)
-        score += v_rev * weights.reversion
-        if v_rev != 0: reasons.append(f"Rev({v_rev:+.1f})")
+        # 2. Weigh Votes (Only Active Engines)
+        active_weight_sum = 0.0
         
-        v_neu = Engines.neuren_engine(numbers)
-        score += v_neu * weights.neuren
-        if v_neu != 0: reasons.append(f"Neuren({v_neu:+.1f})")
-        
-        v_qau = Engines.qaum_engine(numbers)
-        score += v_qau * weights.qaum
-        if v_qau != 0: reasons.append(f"Qaum({v_qau:+.1f})")
-        
-        # --- CALIBRATED THRESHOLD ADJUSTMENT ---
-        # OLD: Base 2.0 (Too strict for cold start)
-        # NEW: Base 1.4 (Allows entry)
-        
-        base_threshold = 1.4  
-        
-        # Reduce threshold by 0.1 for EVERY skip to force engagement
-        reduction = min(state.skip_streak * 0.1, 0.9)
-        final_threshold = max(base_threshold - reduction, 0.5)
-        
-        if reduction > 0:
-            reasons.append(f"Adj(-{reduction:.1f})")
+        for name, val in raw_votes.items():
+            eng = state.engines[name]
+            
+            # Record vote for Manager check next round
+            if val > 0: eng.last_vote = TradeDecision.BIG
+            elif val < 0: eng.last_vote = TradeDecision.SMALL
+            else: eng.last_vote = TradeDecision.SKIP
+            
+            if not eng.is_active:
+                reasons.append(f"{name}(BANNED)")
+                continue
+                
+            active_weight_sum += eng.weight
+            score += val * eng.weight
+            if val != 0: reasons.append(f"{name}({val:+.1f})")
+
+        # 3. Final Decision
+        if active_weight_sum == 0:
+            return TradeDecision.SKIP, 0.0, ["ALL_ENGINES_DEAD"]
+            
+        # Normalize Score
+        normalized_score = score / 2.5  # Divisor to scale roughly to -1..1 range
         
         decision = TradeDecision.SKIP
-        confidence = 0.0
+        conf = 0.0
         
-        if score >= final_threshold:
+        if normalized_score >= 1.0:
             decision = TradeDecision.BIG
-            confidence = min(0.6 + (score/10), 0.95)
-            
-        elif score <= -final_threshold:
+            conf = min(0.6 + (normalized_score/5), 0.98)
+        elif normalized_score <= -1.0:
             decision = TradeDecision.SMALL
-            confidence = min(0.6 + (abs(score)/10), 0.95)
+            conf = min(0.6 + (abs(normalized_score)/5), 0.98)
             
-        return decision, confidence, reasons
+        return decision, conf, reasons
 
 # =============================================================================
-# SECTION 7: MAIN EXECUTION INTERFACE
+# MAIN EXPORT: ULTRA AI PREDICT
 # =============================================================================
 
-def ultraAIPredict(history: List[Dict], currentbankroll: float = 10000.0, lastresult: Optional[str] = None) -> Dict:
+def ultraAIPredict(history: List[Dict], currentbankroll: float, lastresult: Optional[str] = None) -> Dict:
     
-    numbers, outcomes = DataProcessor.process_history(history)
-    
-    # Update State (Win/Loss Tracking)
-    if state.last_prediction and state.last_prediction != TradeDecision.SKIP and lastresult:
-        actual_res = None
-        if lastresult in ['BIG', 'SMALL']:
-            actual_res = lastresult
-        elif outcomes:
-            actual_res = outcomes[-1]
-            
-        if actual_res:
-            did_win = (state.last_prediction.value == actual_res)
-            state.update_after_round(did_win)
-    
-    # Data Integrity Check
-    if len(numbers) < 10:
-        return {
-            'finalDecision': "SKIP",
-            'confidence': 0.0,
-            'positionsize': 0,
-            'level': "BOOTING",
-            'reason': "Need more data",
-            'topsignals': []
-        }
+    # --- PHASE 0: INITIALIZATION ---
+    if state.session_start_bankroll == 0:
+        state.session_start_bankroll = currentbankroll
+    state.current_profit = currentbankroll - state.session_start_bankroll
+
+    # --- PHASE 1: DATA CLEANING ---
+    clean_nums = []
+    clean_outcomes = []
+    for item in reversed(history):
+        v = MathLib.safe_float(item.get('actual_number'))
+        if v is not None:
+            clean_nums.append(v)
+            if 0 <= int(v) <= 4: clean_outcomes.append("SMALL")
+            elif 5 <= int(v) <= 9: clean_outcomes.append("BIG")
+
+    # --- PHASE 2: FEEDBACK LOOP (Manager & Ghost) ---
+    if lastresult and state.last_prediction and state.last_prediction != TradeDecision.SKIP:
+        # 2a. Update Engines
+        EngineManager.update_performance(lastresult)
         
+        # 2b. Check Ghost Protocol
+        real_res = None
+        if lastresult == "BIG": real_res = TradeDecision.BIG
+        elif lastresult == "SMALL": real_res = TradeDecision.SMALL
+        
+        if real_res:
+            did_win = (state.last_prediction == real_res)
+            
+            if did_win:
+                state.loss_streak = 0
+                if state.inversion_mode:
+                    print("[GHOST] Inversion Logic WON. Keeping Ghost Mode Active.")
+                else:
+                    state.consecutive_fails = 0 
+            else:
+                state.loss_streak += 1
+                if not state.inversion_mode:
+                    state.consecutive_fails += 1
+                    if state.consecutive_fails >= 3:
+                        state.inversion_mode = True
+                        print("[GHOST] ⚠️ 3x Fail. ACTIVATING INVERSION PROTOCOL.")
+                else:
+                    # Lost in Ghost Mode -> Chaos -> Reset
+                    state.inversion_mode = False
+                    state.consecutive_fails = 0
+                    print("[GHOST] Inversion Failed. Resetting to Standard.")
+
+    # --- PHASE 3: SAFETY CHECKS ---
+    if state.cooling_off_counter > 0:
+        state.cooling_off_counter -= 1
+        return {'finalDecision': "SKIP", 'confidence': 0, 'positionsize': 0, 
+                'level': "COOLING", 'reason': f"Wait ({state.cooling_off_counter}s)", 'topsignals': []}
+                
+    is_unsafe, vol_reason = MarketMonitor.check_volatility(clean_nums)
+    if is_unsafe:
+        state.cooling_off_counter = 2
+        return {'finalDecision': "SKIP", 'confidence': 0, 'positionsize': 0, 
+                'level': "DANGER", 'reason': f"Volatile: {vol_reason}", 'topsignals': ["MARKET_UNSAFE"]}
+
+    # --- PHASE 4: PREDICTION ---
     council = VotingCouncil()
-    decision, confidence, signals = council.cast_votes(numbers, outcomes)
+    decision, confidence, signals = council.cast_votes(clean_nums, clean_outcomes)
     
-    if decision == TradeDecision.SKIP:
-        state.skip_streak += 1
-        return {
-            'finalDecision': "SKIP",
-            'confidence': 0.0,
-            'positionsize': 0,
-            'level': "SCANNING",
-            'reason': f"Wait (Skips: {state.skip_streak})",
-            'topsignals': signals
-        }
-    else:
-        state.skip_streak = 0
+    # --- PHASE 5: GHOST PROTOCOL (THE FLIP) ---
+    final_decision_str = decision.value
+    meta_status = "STANDARD"
+    
+    if decision != TradeDecision.SKIP and state.inversion_mode:
+        meta_status = "GHOST-ACTIVE"
+        if decision == TradeDecision.BIG:
+            final_decision_str = "SMALL" # FLIP
+            signals.append("INVERTED(BIG->SMALL)")
+        elif decision == TradeDecision.SMALL:
+            final_decision_str = "BIG"   # FLIP
+            signals.append("INVERTED(SMALL->BIG)")
+
+    # --- PHASE 6: DYNAMIC STAKE ---
+    if final_decision_str == "SKIP":
+        state.last_prediction = TradeDecision.SKIP
+        return {'finalDecision': "SKIP", 'confidence': 0, 'positionsize': 0, 
+                'level': "WAIT", 'reason': "Low Conf / Banned", 'topsignals': signals}
+
+    # House Money Logic
+    base_stake = max(currentbankroll * config.base_risk_percent, config.min_bet_amount)
+    
+    if state.current_profit > 100:
+        base_stake *= 1.5
+        meta_status += "|HOUSE_MONEY"
+    elif state.current_profit < -150:
+        base_stake *= 0.5
+        meta_status += "|DEFENSIVE"
         
-    stake, level_name = BankrollManager.get_stake(currentbankroll, confidence, state.loss_streak)
+    # Martingale
+    stake = base_stake * (config.martingale_multiplier ** state.loss_streak)
     
-    state.last_prediction = decision
+    # Hard Limit (20% of bankroll max)
+    if stake > (currentbankroll * 0.20): 
+        stake = currentbankroll * 0.20
+        meta_status += "|MAX_CLAMP"
+
+    # Save State
+    state.last_prediction = TradeDecision(final_decision_str)
     state.last_confidence = confidence
-    
+
     return {
-        'finalDecision': decision.value,
+        'finalDecision': final_decision_str,
         'confidence': round(confidence, 4),
         'positionsize': int(stake),
-        'level': level_name,
+        'level': f"L{state.loss_streak} ({meta_status})",
         'reason': " | ".join(signals),
         'topsignals': signals
     }
 
 if __name__ == "__main__":
-    print("TITAN V500 SOVEREIGN (RENDER CALIBRATED) LOADED SUCCESSFULLY.")
+    print("TITAN V700 SOVEREIGN (FULL UNCOMPRESSED) LOADED.")
