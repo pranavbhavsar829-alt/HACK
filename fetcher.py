@@ -8,62 +8,48 @@ import os
 from collections import deque
 from datetime import datetime
 
-# --- 1. ROBUST IMPORT SECTION ---
+# --- IMPORT ENGINE ---
 try:
     from prediction_engine import ultraAIPredict
-    print("[INIT] TITAN V500 Engine Linked Successfully.")
-except ImportError as e:
-    print(f"\n[CRITICAL ERROR] prediction_engine.py import failed: {e}")
-    sys.exit()
+    print("[INIT] Engine Linked.")
+except ImportError:
+    print("[ERROR] prediction_engine.py missing.")
 
-# --- 2. LOCAL HELPER FUNCTIONS ---
-class GameConstants:
-    BIG = "BIG"
-    SMALL = "SMALL"
-    SKIP = "SKIP"
-
-def get_outcome_from_number(n):
-    try:
-        val = int(float(n))
-        if 0 <= val <= 4: return "SMALL"
-        if 5 <= val <= 9: return "BIG"
-        return None
-    except:
-        return None
-
-# --- 3. CONFIGURATION ---
+# --- CONFIG ---
 API_URL = "https://harshpredictor.site/api/api.php"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "application/json",
     "Connection": "keep-alive"
 }
-
 TACTICAL_DELAY_SECONDS = 15
 HISTORY_LIMIT = 1500
 DB_FILE = 'ar_lottery_history.db'
 DASHBOARD_FILE = 'dashboard_data.json'
 
 RAM_HISTORY = deque(maxlen=HISTORY_LIMIT)
-UI_HISTORY = deque(maxlen=50) # Keeps last 50 results
+UI_HISTORY = deque(maxlen=50) # Updated to 50 as requested
 
 currentbankroll = 10000.0 
 last_prediction = {"issue": None, "label": "WAITING", "stake": 0, "conf": 0, "level": "---"}
 last_win_status = "NONE"
 
-# STATS TRACKING
+# --- NEW: STATS TRACKING ---
 session_wins = 0
 session_losses = 0
 
-# --- 4. UI BRIDGE FUNCTION ---
-def update_dashboard(status_text="IDLE", timer_val=0):
-    # Calculate accuracy
-    total_played = session_wins + session_losses
-    accuracy_str = "0%"
-    if total_played > 0:
-        acc = (session_wins / total_played) * 100
-        accuracy_str = f"{acc:.0f}%"
+def get_outcome_from_number(n):
+    try:
+        val = int(float(n))
+        if 0 <= val <= 4: return "SMALL"
+        if 5 <= val <= 9: return "BIG"
+    except: pass
+    return None
 
+def update_dashboard(status_text="IDLE", timer_val=0):
+    total = session_wins + session_losses
+    acc = f"{(session_wins/total)*100:.0f}%" if total > 0 else "0%"
+    
     data = {
         "period": last_prediction['issue'] if last_prediction['issue'] else "---",
         "prediction": last_prediction['label'],
@@ -74,98 +60,31 @@ def update_dashboard(status_text="IDLE", timer_val=0):
         "lastresult_status": last_win_status,
         "status_text": status_text,
         "timer": timer_val,
-        # STATS BLOCK for Server.py to read
-        "stats": {
-            "wins": session_wins,
-            "losses": session_losses,
-            "accuracy": accuracy_str
-        },
+        "stats": {"wins": session_wins, "losses": session_losses, "accuracy": acc},
         "history": list(UI_HISTORY),
         "timestamp": time.time()
     }
     try:
-        with open(DASHBOARD_FILE + ".tmp", "w") as f:
-            json.dump(data, f)
+        with open(DASHBOARD_FILE + ".tmp", "w") as f: json.dump(data, f)
         os.replace(DASHBOARD_FILE + ".tmp", DASHBOARD_FILE)
-    except: pass
-
-# --- 5. DB FUNCTIONS ---
-def ensure_db_setup():
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute('CREATE TABLE IF NOT EXISTS results (issue TEXT PRIMARY KEY, code INTEGER, fetch_time TEXT)')
-        conn.commit()
-        conn.close()
-    except: pass
-
-async def save_to_db_background(issue, code):
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR IGNORE INTO results (issue, code, fetch_time) VALUES (?, ?, ?)", (issue, code, str(datetime.now())))
-        conn.commit()
-        conn.close()
-    except: pass
-
-# --- 6. BACKFILL & HISTORY ---
-async def perform_initial_backfill(session):
-    print("[INIT] Checking DB...")
-    ensure_db_setup()
-    try:
-        params = {'pageSize': 2000, 'page': 1} 
-        async with session.get(API_URL, headers=HEADERS, params=params, timeout=30) as response:
-            if response.status == 200:
-                data = await response.json()
-                raw_list = data.get('data', {}).get('list', [])
-                if raw_list:
-                    conn = sqlite3.connect(DB_FILE)
-                    cursor = conn.cursor()
-                    batch = []
-                    for item in raw_list:
-                        batch.append((str(item['issueNumber']), int(item['number']), str(datetime.now())))
-                    cursor.executemany("INSERT OR IGNORE INTO results (issue, code, fetch_time) VALUES (?, ?, ?)", batch)
-                    conn.commit()
-                    conn.close()
-                    print(f"[INIT] Backfill: {len(raw_list)} records.")
-    except Exception as e:
-        print(f"[INIT] Backfill error: {e}")
-
-async def load_initial_history():
-    RAM_HISTORY.clear()
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT issue, code FROM results ORDER BY issue DESC LIMIT {HISTORY_LIMIT}")
-        rows = cursor.fetchall()
-        conn.close()
-        for r in reversed(rows):
-            RAM_HISTORY.append({'issue': str(r[0]), 'actual_number': int(r[1]), 'code': int(r[1])})
-        print(f"[INIT] Loaded {len(RAM_HISTORY)} records.")
     except: pass
 
 async def fetch_latest_data(session):
     try:
         async with session.get(API_URL, headers=HEADERS, params={'pageSize': 5, 'page': 1}, timeout=5) as response:
             if response.status == 200:
-                data = await response.json()
-                return data.get('data', {}).get('list', [])
+                d = await response.json()
+                return d.get('data', {}).get('list', [])
     except: return None
 
-# --- 7. MAIN LOOP ---
+# --- MAIN LOOP (CALLED BY SERVER.PY) ---
 async def main_loop():
     global currentbankroll, last_prediction, last_win_status, session_wins, session_losses
-    
-    print("================================================================")
-    print("   TITAN V500 - BACKEND RUNNING (TIMER & STATS ACTIVE)")
-    print("================================================================")
+    print("--- FETCHER ENGINE STARTED ---")
     
     last_processed_issue = None
     
     async with aiohttp.ClientSession() as session:
-        await perform_initial_backfill(session)
-        await load_initial_history()
-        
         while True:
             update_dashboard("FETCHING...", 0) 
             raw_list = await fetch_latest_data(session)
@@ -176,86 +95,59 @@ async def main_loop():
                 curr_code = int(latest['number'])
                 
                 if curr_issue != last_processed_issue:
-                    # 1. Update Memory
+                    # Update History
                     new_record = {'issue': curr_issue, 'actual_number': curr_code}
                     if not RAM_HISTORY or RAM_HISTORY[-1]['issue'] != curr_issue:
                         RAM_HISTORY.append(new_record)
-                        asyncio.create_task(save_to_db_background(curr_issue, curr_code))
                     
-                    # 2. Check Win/Loss
+                    # Check Result
                     if last_prediction['issue'] and last_prediction['label'] != "SKIP":
                         real_outcome = get_outcome_from_number(curr_code)
                         predicted = last_prediction['label']
-                        stake = last_prediction['stake']
                         
-                        is_win = False
-                        if predicted == real_outcome: is_win = True
+                        is_win = (predicted == real_outcome)
+                        # Green/Red logic check
                         if predicted in ["RED", "GREEN"]:
                             real_c = "RED" if curr_code in [0,2,4,6,8] else "GREEN"
                             if curr_code == 5: real_c = "GREEN"
                             if predicted == real_c: is_win = True
 
                         if is_win:
-                            profit = stake * 0.98
-                            currentbankroll += profit
+                            session_wins += 1
                             last_win_status = "WIN"
-                            session_wins += 1 
-                            UI_HISTORY.appendleft({
-                                "period": last_prediction['issue'],
-                                "pred": predicted,
-                                "result": "WIN",
-                                "profit": f"+{profit:.0f}"
-                            })
-                            print(f"\n[WIN] {curr_issue}={curr_code} ({real_outcome}) | +${profit:.0f}")
+                            UI_HISTORY.appendleft({"period": last_prediction['issue'], "pred": predicted, "result": "WIN"})
+                            print(f"[WIN] {curr_issue}")
                         else:
-                            currentbankroll -= stake
-                            last_win_status = "LOSS"
                             session_losses += 1
-                            UI_HISTORY.appendleft({
-                                "period": last_prediction['issue'],
-                                "pred": predicted,
-                                "result": "LOSS",
-                                "profit": f"-{stake:.0f}"
-                            })
-                            print(f"\n[LOSS] {curr_issue}={curr_code} ({real_outcome}) | -${stake:.0f}")
-                    
-                    # 3. Wait Loop (With Timer Updates)
+                            last_win_status = "LOSS"
+                            UI_HISTORY.appendleft({"period": last_prediction['issue'], "pred": predicted, "result": "LOSS"})
+                            print(f"[LOSS] {curr_issue}")
+
+                    # Countdown Loop
                     next_issue = str(int(curr_issue) + 1)
                     print(f"[WAIT] Target: {next_issue}")
-                    
                     for i in range(TACTICAL_DELAY_SECONDS, 0, -1):
                         update_dashboard(f"WAITING... {i}s", i)
                         await asyncio.sleep(1)
 
-                    # 4. Predict
+                    # Predict
                     update_dashboard("CALCULATING...", 0)
-                    snapshot = list(RAM_HISTORY)
-                    if len(snapshot) > 10:
+                    if len(RAM_HISTORY) > 10:
                         try:
-                            ai_result = ultraAIPredict(
-                                history=snapshot, 
-                                currentbankroll=currentbankroll, 
-                                lastresult=last_prediction['label'] if last_prediction['issue'] == curr_issue else None
-                            )
-                            
+                            ai_result = ultraAIPredict(list(RAM_HISTORY), currentbankroll)
                             decision = ai_result['finalDecision']
-                            stake = ai_result['positionsize']
-                            conf = ai_result['confidence']
-                            level = ai_result['level']
-                            
                             last_prediction = {
                                 "issue": next_issue, 
                                 "label": decision, 
-                                "stake": stake,
-                                "conf": conf,
-                                "level": level
+                                "stake": ai_result['positionsize'],
+                                "conf": ai_result['confidence'],
+                                "level": ai_result['level']
                             }
-                            
-                            print(f"[PRED] {decision} | {conf:.1%} | ${stake} | {ai_result.get('reason', '')}")
+                            print(f"[PRED] {decision}")
                             update_dashboard("ACTIVE", 0)
                         except Exception as e:
-                            print(f"[ERROR] Prediction Engine Failed: {e}")
-                            update_dashboard("ENGINE ERROR", 0)
+                            print(f"Error: {e}")
+                            update_dashboard("ERROR", 0)
                     
                     last_processed_issue = curr_issue
 
@@ -263,10 +155,6 @@ async def main_loop():
 
 if __name__ == '__main__':
     try:
-        if sys.platform == 'win32':
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        if sys.platform == 'win32': asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
         asyncio.run(main_loop())
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        print(f"Error: {e}")
+    except KeyboardInterrupt: pass
