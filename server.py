@@ -1,228 +1,251 @@
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for
 import sqlite3
-import secrets
 import os
 import json
 import functools
 import uuid
-import hmac
-import hashlib
-import base64
-import time
+import secrets
 import threading
 import asyncio
 from datetime import datetime, timedelta
 
 # --- IMPORT FETCHER ---
+# This ensures the prediction logic runs in the background
 import fetcher
 
 app = Flask(__name__)
+
+# --- CONFIGURATION ---
+# CHANGE THIS TO A RANDOM SECRET STRING FOR SECURITY
 app.secret_key = "TITAN_SECURE_KEY_CHANGE_THIS" 
 ADMIN_PASSWORD = "admin" 
-OFFLINE_SECRET = "TITAN_OFFLINE_SECRET_CODE_123" 
-MASTER_KEY = "TITAN-PERM-ADMIN" 
 
-# --- ABSOLUTE PATH DB SETUP (CRITICAL FIX) ---
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-DB_NAME = 'titan_db.sqlite'
-DB_PATH = os.path.join(BASE_DIR, DB_NAME)
+# --- RENDER DISK SETUP ---
+# Render specific paths to ensure database is not deleted on restart
+if os.path.exists('/var/lib/data'):
+    BASE_DIR = '/var/lib/data'
+elif os.path.exists('/data'):
+    BASE_DIR = '/data'
+else:
+    BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+
+DB_PATH = os.path.join(BASE_DIR, 'titan_db.sqlite')
 DASHBOARD_FILE = os.path.join(BASE_DIR, 'dashboard_data.json')
 
+print(f"[SYSTEM] Running with Storage Path: {BASE_DIR}")
+
 def create_connection():
+    """Creates a connection to the SQLite database."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 def ensure_tables():
+    """Sets up the database tables for Keys and Sessions."""
     conn = create_connection()
-    # Table for Legacy Online Keys
+    
+    # 1. ACCESS KEYS TABLE
+    # Stores the key, the user note, expiration, and the LOCKED DEVICE ID
     conn.execute('''CREATE TABLE IF NOT EXISTS access_keys (
                     key_code TEXT PRIMARY KEY,
                     note TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    is_active INTEGER DEFAULT 1,
-                    expires_at TEXT,
-                    max_devices INTEGER DEFAULT 1
+                    expires_at TIMESTAMP,
+                    bound_device_id TEXT,
+                    is_active INTEGER DEFAULT 1
                 )''')
-    # Table for Active Sessions (Live Users)
+    
+    # 2. ACTIVE SESSIONS TABLE
+    # Tracks who is currently logged in
     conn.execute('''CREATE TABLE IF NOT EXISTS active_sessions (
                     session_id TEXT PRIMARY KEY,
                     key_code TEXT,
-                    last_seen TIMESTAMP,
-                    ip_address TEXT
+                    ip_address TEXT,
+                    last_heartbeat TIMESTAMP
                 )''')
-    # Table for Banned Keys (Blacklist)
-    conn.execute('''CREATE TABLE IF NOT EXISTS blacklisted_keys (
-                    key_code TEXT PRIMARY KEY, 
-                    reason TEXT, 
-                    banned_at TEXT
-                )''')
+    
     conn.commit()
     conn.close()
 
-def cleanup_inactive_sessions():
-    """Removes sessions that haven't sent a heartbeat in 2 minutes"""
-    conn = create_connection()
-    limit = datetime.now() - timedelta(minutes=2)
-    conn.execute("DELETE FROM active_sessions WHERE last_seen < ?", (limit,))
-    conn.commit()
-    conn.close()
-
-# Run Setup
+# Initialize Database
 ensure_tables()
 
 # --- BACKGROUND WORKER ---
 def start_fetcher_loop():
+    """Runs the fetcher in a background thread."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    print("[SYSTEM] Auto-Starting Predictor...")
-    try:
+    try: 
         loop.run_until_complete(fetcher.main_loop())
-    except Exception as e:
-        print(f"[ERROR] Fetcher loop failed: {e}")
+    except Exception as e: 
+        print(f"Fetcher Error: {e}")
 
+# Only start the background thread if this is the main process
 if os.environ.get("WERKZEUG_RUN_MAIN") != "true":
     t = threading.Thread(target=start_fetcher_loop, daemon=True)
     t.start()
 
-# --- HELPER: DECODE NAME FROM KEY ---
-def get_name_from_key(key):
-    if key == MASTER_KEY: return "ADMIN"
-    if not key.startswith("TITAN-"): return "Legacy DB Key"
-    try:
-        # TITAN-PAYLOAD-SIG
-        payload_b64 = key.split('-')[1]
-        padding = len(payload_b64) % 4
-        if padding: payload_b64 += '=' * (4 - padding)
-        payload = base64.urlsafe_b64decode(payload_b64).decode()
-        parts = payload.split('|')
-        # Format: timestamp|max|name
-        if len(parts) >= 3: return parts[2]
-        return "Unknown User"
-    except: return "Error"
+# --- AUTHENTICATION HELPERS ---
+def cleanup_sessions():
+    """Removes sessions that have been inactive for >60 seconds."""
+    conn = create_connection()
+    limit = datetime.now() - timedelta(seconds=60)
+    conn.execute("DELETE FROM active_sessions WHERE last_heartbeat < ?", (limit,))
+    conn.commit()
+    conn.close()
 
-# --- AUTH LOGIC ---
 def login_required(f):
+    """Decorator to protect routes."""
     @functools.wraps(f)
     def wrapped(*args, **kwargs):
-        if not session.get('authenticated'): return redirect(url_for('login'))
+        if not session.get('authenticated'):
+            return redirect(url_for('login'))
         return f(*args, **kwargs)
     return wrapped
 
 def admin_required(f):
+    """Decorator to protect Admin Panel."""
     @functools.wraps(f)
     def wrapped(*args, **kwargs):
-        if not session.get('is_admin'): return redirect(url_for('admin_login'))
+        if not session.get('is_admin'):
+            return redirect(url_for('admin_login'))
         return f(*args, **kwargs)
     return wrapped
 
-# --- VALIDATION ---
-def is_key_blacklisted(key):
-    conn = create_connection()
-    row = conn.execute("SELECT * FROM blacklisted_keys WHERE key_code = ?", (key,)).fetchone()
-    conn.close()
-    return row is not None
-
-def verify_stateless_key(key_input):
-    try:
-        parts = key_input.split('-')
-        if len(parts) != 3 or parts[0] != "TITAN": return False, "INVALID FORMAT"
-        payload_encoded = parts[1]
-        signature_input = parts[2]
-        
-        try:
-            padding = len(payload_encoded) % 4
-            if padding: payload_encoded += '=' * (4 - padding)
-            payload = base64.urlsafe_b64decode(payload_encoded).decode()
-            data_parts = payload.split('|')
-            timestamp_str = data_parts[0]
-            expiry_ts = int(timestamp_str)
-        except: return False, "CORRUPT KEY"
-
-        expected_sig = hmac.new(OFFLINE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:8].upper()
-        if not hmac.compare_digest(expected_sig, signature_input): return False, "FAKE KEY"
-        if time.time() > expiry_ts: return False, "KEY EXPIRED"
-        if is_key_blacklisted(key_input): return False, "KEY BANNED"
-        return True, "OK"
-    except: return False, "ERROR"
-
-def validate_key_and_login(key_input):
-    cleanup_inactive_sessions()
-    if key_input == MASTER_KEY:
-        session['session_uuid'] = str(uuid.uuid4())
-        return True, "OK"
-
-    # 1. Offline Check
-    if key_input.startswith("TITAN-"):
-        is_valid, msg = verify_stateless_key(key_input)
-        if is_valid:
-            session['session_uuid'] = session.get('session_uuid') or str(uuid.uuid4())
-            try:
-                conn = create_connection()
-                conn.execute("INSERT OR REPLACE INTO active_sessions (session_id, key_code, last_seen) VALUES (?, ?, ?)", (session['session_uuid'], key_input, datetime.now()))
-                conn.commit()
-                conn.close()
-            except: pass
-            return True, "OK"
-        else: return False, msg
-
-    # 2. Database Check
-    conn = create_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM access_keys WHERE key_code = ? AND is_active = 1", (key_input,))
-    row = cur.fetchone()
-    if not row: conn.close(); return False, "INVALID KEY"
-    if is_key_blacklisted(key_input): conn.close(); return False, "KEY BANNED"
-    if row['expires_at'] and datetime.now() > datetime.strptime(row['expires_at'], '%Y-%m-%d %H:%M:%S.%f'):
-        conn.close(); return False, "KEY EXPIRED"
-    
-    max_devices = row['max_devices']
-    cur.execute("SELECT COUNT(*) FROM active_sessions WHERE key_code = ?", (key_input,))
-    current_users = cur.fetchone()[0]
-    
-    if current_users < max_devices or (session.get('session_uuid') and check_is_active(session.get('session_uuid'))):
-        new_uuid = session.get('session_uuid') or str(uuid.uuid4())
-        session['session_uuid'] = new_uuid
-        conn.execute("INSERT OR REPLACE INTO active_sessions (session_id, key_code, last_seen) VALUES (?, ?, ?)", (new_uuid, key_input, datetime.now()))
-        conn.commit()
-        conn.close()
-        return True, "OK"
-    else:
-        conn.close(); return False, "MAX DEVICES REACHED"
-
-def check_is_active(sess_id):
-    conn = create_connection()
-    try: row = conn.execute("SELECT * FROM active_sessions WHERE session_id = ?", (sess_id,)).fetchone()
-    except: return False
-    conn.close()
-    return row is not None
-
 # --- ROUTES ---
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     error = None
     if request.method == 'POST':
-        key = request.form.get('key', '').strip()
-        is_valid, msg = validate_key_and_login(key)
-        if is_valid:
-            session['authenticated'] = True
-            session['user_key'] = key
-            return redirect(url_for('index'))
-        else: error = msg
-    return f"""<body style="background:#000; color:#0f0; display:flex; justify-content:center; align-items:center; height:100vh; font-family:monospace; flex-direction:column;">
-            <h1>🔒 TITAN LOGIN</h1><p style="color:red">{error if error else ''}</p>
-            <form method="post"><input type="text" name="key" placeholder="ACCESS KEY" style="padding:10px; width:250px; text-align:center;"><br><br><button style="padding:10px 20px; font-weight:bold; cursor:pointer;">UNLOCK</button></form></body>"""
+        key_input = request.form.get('key', '').strip()
+        device_fingerprint = request.form.get('device_id', '').strip() # Received from JavaScript
+        
+        cleanup_sessions()
+        
+        conn = create_connection()
+        # 1. Look up the key
+        key_data = conn.execute("SELECT * FROM access_keys WHERE key_code = ?", (key_input,)).fetchone()
+        
+        if not key_data:
+            error = "ERROR: INVALID KEY"
+        elif key_data['is_active'] == 0:
+            error = "ERROR: KEY IS BANNED"
+        else:
+            # 2. Check Expiration
+            expire_dt = datetime.strptime(key_data['expires_at'], '%Y-%m-%d %H:%M:%S')
+            if datetime.now() > expire_dt:
+                error = "ERROR: KEY EXPIRED"
+            else:
+                # 3. DEVICE LOCK CHECK (CRITICAL)
+                current_bound_id = key_data['bound_device_id']
+                
+                # If key has no owner yet, bind it to this phone PERMANENTLY
+                if not current_bound_id:
+                    conn.execute("UPDATE access_keys SET bound_device_id = ? WHERE key_code = ?", 
+                                 (device_fingerprint, key_input))
+                    conn.commit()
+                # If key is already owned, check if it matches this phone
+                elif current_bound_id != device_fingerprint:
+                    error = "ACCESS DENIED: Key is locked to a different device."
+                
+                if not error:
+                    # SUCCESSFUL LOGIN
+                    new_sess_id = str(uuid.uuid4())
+                    session['authenticated'] = True
+                    session['user_key'] = key_input
+                    session['session_uuid'] = new_sess_id
+                    
+                    # Log the session
+                    conn.execute("INSERT INTO active_sessions (session_id, key_code, ip_address, last_heartbeat) VALUES (?, ?, ?, ?)",
+                                 (new_sess_id, key_input, request.remote_addr, datetime.now()))
+                    conn.commit()
+                    conn.close()
+                    return redirect(url_for('index'))
+
+        conn.close()
+
+    # LOGIN SCREEN HTML (Includes Device Fingerprinting Script)
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {{ background-color: #050505; color: #00ff41; font-family: 'Courier New', monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }}
+            input {{ background: #111; border: 1px solid #333; color: white; padding: 12px; width: 280px; text-align: center; font-size: 16px; margin-bottom: 20px; outline: none; }}
+            button {{ background: #00ff41; color: black; border: none; padding: 12px 30px; font-weight: bold; font-size: 16px; cursor: pointer; }}
+            .error {{ color: #ff0055; margin-bottom: 20px; font-weight: bold; }}
+            h1 {{ margin-bottom: 5px; }}
+        </style>
+    </head>
+    <body>
+        <h1>TITAN V700</h1>
+        <div style="color:#666; margin-bottom:30px; font-size:12px;">SECURE ACCESS PORTAL</div>
+        
+        <div class="error">{error if error else ''}</div>
+        
+        <form method="post" id="loginForm">
+            <input type="hidden" name="device_id" id="device_id_field">
+            <input type="text" name="key" placeholder="ENTER LICENSE KEY" autocomplete="off">
+            <br>
+            <button type="submit">AUTHENTICATE</button>
+        </form>
+
+        <script>
+            // 1. DEVICE FINGERPRINT GENERATION
+            // This runs silently to create a unique ID for this phone
+            let dId = localStorage.getItem('titan_device_id');
+            if (!dId) {{
+                // Generate a random ID if one doesn't exist
+                dId = 'DEV-' + Math.random().toString(36).substr(2, 9).toUpperCase() + '-' + Date.now();
+                localStorage.setItem('titan_device_id', dId);
+            }}
+            // 2. Inject ID into the form so the server receives it
+            document.getElementById('device_id_field').value = dId;
+        </script>
+    </body>
+    </html>
+    """
+
+@app.route('/logout')
+def logout():
+    # Kill the session in the DB
+    if 'session_uuid' in session:
+        conn = create_connection()
+        conn.execute("DELETE FROM active_sessions WHERE session_id = ?", (session['session_uuid'],))
+        conn.commit()
+        conn.close()
+    session.clear()
+    return redirect(url_for('login'))
 
 @app.route('/heartbeat', methods=['POST'])
 def heartbeat():
-    if session.get('authenticated') and session.get('session_uuid'):
-        try:
-            conn = create_connection()
-            conn.execute("UPDATE active_sessions SET last_seen = ? WHERE session_id = ?", (datetime.now(), session['session_uuid']))
-            conn.commit()
-            conn.close()
-        except: pass
-    return jsonify({"status": "alive"})
+    """Called by the client every few seconds to keep the session alive."""
+    if 'session_uuid' in session:
+        conn = create_connection()
+        conn.execute("UPDATE active_sessions SET last_heartbeat = ? WHERE session_id = ?", (datetime.now(), session['session_uuid']))
+        conn.commit()
+        conn.close()
+    return jsonify({"status": "ok"})
+
+@app.route('/data')
+@login_required
+def data():
+    """Serves the prediction data."""
+    # Mini-heartbeat
+    if 'session_uuid' in session:
+        conn = create_connection()
+        conn.execute("UPDATE active_sessions SET last_heartbeat = ? WHERE session_id = ?", (datetime.now(), session['session_uuid']))
+        conn.close()
+
+    try:
+        if os.path.exists(DASHBOARD_FILE):
+            with open(DASHBOARD_FILE, 'r') as f: return jsonify(json.load(f))
+    except: pass
+    return jsonify({"prediction": "LOADING...", "status_text": "SYSTEM INITIALIZING..."})
+
+# --- ADMIN PANEL ---
 
 @app.route('/admin_login', methods=['GET', 'POST'])
 def admin_login():
@@ -230,190 +253,229 @@ def admin_login():
         if request.form.get('password') == ADMIN_PASSWORD:
             session['is_admin'] = True
             return redirect(url_for('admin_panel'))
-    return '<form method="post" style="text-align:center; margin-top:50px;"><input type="password" name="password" placeholder="Admin Pass"><button>Login</button></form>'
+    return '<body style="background:#111; color:white; display:flex; justify-content:center; align-items:center; height:100vh;"><form method="post"><input type="password" name="password" placeholder="Admin Password" style="padding:10px;"><button>Login</button></form></body>'
 
 @app.route('/admin', methods=['GET', 'POST'])
 @admin_required
 def admin_panel():
-    cleanup_inactive_sessions()
+    cleanup_sessions()
     conn = create_connection()
-    
-    # Handle Ban Action
-    if request.method == 'POST' and 'ban_key' in request.form:
-        b_key = request.form.get('ban_key').strip()
-        conn.execute("INSERT OR REPLACE INTO blacklisted_keys (key_code, reason, banned_at) VALUES (?, ?, ?)", (b_key, "Admin Ban", datetime.now()))
-        conn.commit()
-        conn.execute("DELETE FROM active_sessions WHERE key_code = ?", (b_key,))
-        conn.commit()
+    msg = ""
 
-    # Get Data
-    active_sessions = conn.execute("SELECT * FROM active_sessions ORDER BY last_seen DESC").fetchall()
-    banned = conn.execute("SELECT * FROM blacklisted_keys ORDER BY banned_at DESC").fetchall()
+    # ACTION: GENERATE NEW KEY
+    if request.method == 'POST' and 'create_key' in request.form:
+        name = request.form.get('note', 'User')
+        days = int(request.form.get('days', 30))
+        
+        # Create Key: TITAN-USER-RANDOM
+        rand_str = secrets.token_hex(4).upper()
+        clean_name = "".join(c for c in name if c.isalnum())
+        new_key = f"TITAN-{clean_name.upper()}-{rand_str}"
+        
+        expire_str = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+        
+        try:
+            conn.execute("INSERT INTO access_keys (key_code, note, expires_at) VALUES (?, ?, ?)", 
+                         (new_key, name, expire_str))
+            conn.commit()
+            msg = f"SUCCESS: Generated {new_key}"
+        except Exception as e:
+            msg = f"ERROR: {e}"
+
+    # ACTION: DELETE KEY
+    if request.method == 'POST' and 'delete_key' in request.form:
+        target_key = request.form.get('delete_key')
+        conn.execute("DELETE FROM access_keys WHERE key_code = ?", (target_key,))
+        conn.commit()
+        msg = f"Deleted key {target_key}"
+
+    # ACTION: RESET DEVICE (If user changes phone)
+    if request.method == 'POST' and 'reset_device' in request.form:
+        target_key = request.form.get('reset_device')
+        conn.execute("UPDATE access_keys SET bound_device_id = NULL WHERE key_code = ?", (target_key,))
+        conn.commit()
+        msg = f"Device Lock RESET for {target_key}. User can now link a new phone."
+
+    # FETCH DATA FOR TABLE
+    keys = conn.execute("SELECT * FROM access_keys ORDER BY created_at DESC").fetchall()
+    
+    # Check Online Status
+    online_map = {}
+    sessions = conn.execute("SELECT key_code FROM active_sessions").fetchall()
+    for s in sessions: online_map[s['key_code']] = True
+    
     conn.close()
     
-    # Render Active Users Table
-    active_rows = ""
-    for s in active_sessions:
-        k = s['key_code']
-        name = get_name_from_key(k)
-        active_rows += f"""
-        <tr>
-            <td style="color:#00ff41; font-weight:bold;">{name}</td>
-            <td style="font-size:12px;">{k[:20]}...</td>
-            <td>{s['last_seen']}</td>
+    # BUILD HTML TABLE
+    rows = ""
+    for k in keys:
+        is_online = online_map.get(k['key_code'], False)
+        status_dot = "🟢" if is_online else "⚪"
+        
+        # Check if device is locked
+        device_status = f"<span style='color:orange'>LOCKED ({k['bound_device_id'][:8]}...)</span>" if k['bound_device_id'] else "<span style='color:green'>OPEN (No Device)</span>"
+        
+        rows += f"""
+        <tr style="border-bottom:1px solid #ddd; height:40px;">
+            <td style="padding:10px;"><strong>{k['key_code']}</strong></td>
+            <td>{k['note']}</td>
+            <td>{status_dot}</td>
+            <td style="font-size:12px;">{device_status}</td>
+            <td style="font-size:12px;">{k['expires_at']}</td>
             <td>
-                <form method="POST" style="margin:0;">
-                    <input type="hidden" name="ban_key" value="{k}">
-                    <button style="background:red; color:white; border:none; cursor:pointer; font-size:10px; padding:3px 8px;">BAN 🚫</button>
+                <form method="POST" style="display:inline;" onsubmit="return confirm('Allow new device?');">
+                    <input type="hidden" name="reset_device" value="{k['key_code']}">
+                    <button style="font-size:10px; cursor:pointer; background:#eee;">RESET ID</button>
+                </form>
+                <form method="POST" style="display:inline;" onsubmit="return confirm('Delete Key?');">
+                    <input type="hidden" name="delete_key" value="{k['key_code']}">
+                    <button style="color:white; background:red; border:none; font-size:10px; cursor:pointer; padding:2px 5px;">DEL</button>
                 </form>
             </td>
-        </tr>"""
+        </tr>
+        """
 
-    # Render Banned Table
-    ban_rows = "".join([f"<tr><td>{b[0][:25]}...</td><td style='color:red'>BANNED</td></tr>" for b in banned])
-
-    return f"""<body style="font-family:monospace; padding:20px; background:#f0f0f0;">
-            <h1>ADMIN PANEL - LIVE USERS</h1>
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head><title>Titan Admin</title></head>
+    <body style="font-family:sans-serif; background:#f4f4f4; padding:20px;">
+        <div style="max-width:1000px; margin:0 auto;">
+            <h1 style="margin-bottom:5px;">TITAN V700 MANAGER</h1>
+            <p style="color:blue; font-weight:bold;">{msg}</p>
             
-            <div style="background:white; padding:15px; border:1px solid #ccc; margin-bottom:20px;">
-                <h3 style="margin-top:0; color:green;">🟢 LIVE ACTIVE USERS ({len(active_sessions)})</h3>
-                <p>Offline Keys only appear here when a user is <b>currently logged in</b>.</p>
-                <table border="1" cellpadding="5" style="width:100%; border-collapse:collapse;">
-                    <tr style="background:#eee;"><th>User Name</th><th>Key (Snippet)</th><th>Last Seen</th><th>Action</th></tr>
-                    {active_rows if active_rows else "<tr><td colspan='4' style='text-align:center;'>No users currently logged in.</td></tr>"}
-                </table>
-            </div>
-
-            <div style="background:#ffdddd; padding:15px; border:1px solid red;">
-                <h3 style="margin-top:0; color:darkred;">🚫 BANNED KEYS</h3>
-                <form method="POST" style="margin-bottom:10px;">
-                    <input type="text" name="ban_key" placeholder="Paste Key to Ban..." style="width:300px;">
-                    <button>Manually Ban</button>
+            <div style="background:white; padding:20px; border-radius:8px; box-shadow:0 2px 5px rgba(0,0,0,0.1); margin-bottom:20px;">
+                <h3 style="margin-top:0;">Generate New License</h3>
+                <form method="POST" style="display:flex; gap:10px;">
+                    <input type="hidden" name="create_key" value="1">
+                    <input type="text" name="note" placeholder="User Name (e.g. Client1)" required style="padding:8px;">
+                    <input type="number" name="days" value="30" style="width:60px; padding:8px;" title="Days">
+                    <button style="padding:8px 20px; background:black; color:white; border:none; cursor:pointer;">CREATE KEY</button>
                 </form>
-                <table border="1" cellpadding="5" style="width:100%; background:white;">
-                    {ban_rows}
-                </table>
             </div>
-            </body>"""
 
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect(url_for('login'))
-
-@app.route('/data')
-@login_required
-def data():
-    try:
-        if os.path.exists(DASHBOARD_FILE):
-            with open(DASHBOARD_FILE, 'r') as f:
-                return jsonify(json.load(f))
-    except: pass
-    return jsonify({"period": "---", "prediction": "LOADING...", "timer": 0, "stats": {"wins":0, "losses":0, "accuracy":"0%"}})
+            <table style="width:100%; border-collapse:collapse; background:white; box-shadow:0 2px 5px rgba(0,0,0,0.1);">
+                <thead style="background:#222; color:white;">
+                    <tr>
+                        <th style="padding:10px; text-align:left;">License Key</th>
+                        <th style="text-align:left;">User</th>
+                        <th style="text-align:left;">Status</th>
+                        <th style="text-align:left;">Device Lock</th>
+                        <th style="text-align:left;">Expires</th>
+                        <th style="text-align:left;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>{rows}</tbody>
+            </table>
+            <br>
+            <a href="/">Go to Dashboard</a> | <a href="/logout">Logout</a>
+        </div>
+    </body>
+    </html>
+    """
 
 @app.route('/')
 @login_required
 def index():
     return render_template_string(HTML_TEMPLATE)
 
+# --- CLIENT DASHBOARD TEMPLATE ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TITAN AI V4</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TITAN V700 LIVE</title>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=JetBrains+Mono:wght@400;700&display=swap');
-        :root { --bg: #050505; --card: #111; --text: #fff; --accent: #00ff41; --loss: #ff0055; }
-        body { background-color: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
-        .header { width: 100%; max-width: 480px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-        .logo { font-family: 'JetBrains Mono'; font-weight: 900; letter-spacing: -1px; font-size: 20px; }
-        .logout-btn { color: var(--loss); text-decoration: none; font-size: 12px; border: 1px solid var(--loss); padding: 4px 10px; border-radius: 4px; }
-        .dashboard-grid { width: 100%; max-width: 480px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 15px; }
-        .stat-card { background: var(--card); padding: 15px; border-radius: 12px; text-align: center; border: 1px solid #222; }
-        .stat-label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
-        .stat-val { font-size: 18px; font-weight: 900; margin-top: 5px; font-family: 'JetBrains Mono'; }
-        .c-green { color: var(--accent); }
-        .c-red { color: var(--loss); }
-        .main-card { width: 100%; max-width: 480px; background: var(--card); border-radius: 16px; padding: 25px; text-align: center; border: 1px solid #222; box-shadow: 0 10px 30px rgba(0,0,0,0.5); margin-bottom: 20px; position: relative; overflow: hidden; }
-        .timer-bar { position: absolute; top: 0; left: 0; height: 4px; background: var(--accent); width: 100%; transition: width 0.5s linear; }
-        .period-display { font-family: 'JetBrains Mono'; color: #666; font-size: 14px; margin-bottom: 10px; }
-        .prediction-display { font-size: 56px; font-weight: 900; text-transform: uppercase; margin: 10px 0; line-height: 1; }
-        .res-big { color: var(--accent); text-shadow: 0 0 30px rgba(0, 255, 65, 0.15); }
-        .res-small { color: var(--loss); text-shadow: 0 0 30px rgba(255, 0, 85, 0.15); }
-        .res-wait { color: #333; }
-        .countdown { font-family: 'JetBrains Mono'; font-size: 24px; font-weight: bold; color: #fff; margin-top: 10px; }
-        .countdown.danger { color: #ffaa00; }
-        .history-list { width: 100%; max-width: 480px; background: var(--card); border-radius: 12px; border: 1px solid #222; overflow-y: auto; max-height: 350px; }
-        .history-list::-webkit-scrollbar { width: 6px; }
-        .history-list::-webkit-scrollbar-track { background: #111; }
-        .history-list::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
-        .history-item { display: flex; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid #1a1a1a; font-size: 13px; font-family: 'JetBrains Mono'; }
-        .history-item:last-child { border-bottom: none; }
-        .h-period { color: #666; }
-        .h-win { color: var(--accent); }
-        .h-loss { color: var(--loss); }
-        .h-pending { color: #888; }
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;800&display=swap');
+        body { background-color: #050505; color: #fff; font-family: 'JetBrains Mono', monospace; margin: 0; padding: 10px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+        
+        .card { width: 100%; max-width: 400px; background: #111; border: 1px solid #222; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 20px; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        
+        .header { display: flex; justify-content: space-between; width: 100%; max-width: 400px; margin-bottom: 20px; border-bottom: 1px solid #222; padding-bottom: 10px; }
+        .logo { font-weight: 800; font-size: 18px; }
+        .accent { color: #00ff41; }
+        
+        .period { color: #666; font-size: 14px; margin-top: 10px; }
+        .prediction { font-size: 56px; font-weight: 800; margin: 15px 0; line-height: 1; }
+        .big { color: #00ff41; text-shadow: 0 0 30px rgba(0,255,65,0.3); }
+        .small { color: #ff0055; text-shadow: 0 0 30px rgba(255,0,85,0.3); }
+        .wait { color: #444; }
+        
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; }
+        .info-box { background: #1a1a1a; padding: 10px; border-radius: 6px; font-size: 12px; }
+        .info-label { color: #666; font-size: 10px; display: block; margin-bottom: 4px; }
+        
+        .timer-bar { width: 100%; height: 4px; background: #222; margin-bottom: 20px; border-radius: 2px; overflow: hidden; }
+        .fill { height: 100%; background: #00ff41; width: 0%; transition: width 0.5s linear; }
     </style>
 </head>
 <body>
     <div class="header">
-        <div class="logo">TITAN AI <span style="color:var(--accent)">V4</span></div>
-        <a href="/logout" class="logout-btn">LOGOUT</a>
+        <div class="logo">TITAN <span class="accent">V700</span></div>
+        <a href="/logout" style="color:#666; text-decoration:none; font-size:12px;">LOGOUT</a>
     </div>
-    <div class="dashboard-grid">
-        <div class="stat-card"><div class="stat-label">WINS</div><div class="stat-val c-green" id="stat-wins">0</div></div>
-        <div class="stat-card"><div class="stat-label">LOSSES</div><div class="stat-val c-red" id="stat-loss">0</div></div>
-        <div class="stat-card"><div class="stat-label">ACCURACY</div><div class="stat-val" id="stat-acc">0%</div></div>
+
+    <div class="card">
+        <div class="timer-bar"><div class="fill" id="timer"></div></div>
+        
+        <div class="period" id="period">WAITING FOR SERVER...</div>
+        
+        <div id="prediction" class="prediction wait">---</div>
+        
+        <div style="color:#888; font-size:12px;" id="status">CONNECTING...</div>
+
+        <div class="info-grid">
+            <div class="info-box">
+                <span class="info-label">CONFIDENCE</span>
+                <span id="conf" style="font-weight:bold; color:white;">0%</span>
+            </div>
+            <div class="info-box">
+                <span class="info-label">STRATEGY</span>
+                <span id="strat" style="font-weight:bold; color:white;">---</span>
+            </div>
+        </div>
+        
+        <div style="margin-top:15px; font-size:10px; color:#444;">
+            SESSION WINS: <span id="wins" style="color:#00ff41">0</span> | LOSS: <span id="losses" style="color:#ff0055">0</span>
+        </div>
     </div>
-    <div class="main-card">
-        <div class="timer-bar" id="timer-bar"></div>
-        <div class="period-display" id="period">PERIOD: LOADING...</div>
-        <div id="prediction" class="prediction-display res-wait">---</div>
-        <div class="countdown" id="countdown">00:00</div>
-        <div style="font-size: 10px; color: #555; margin-top: 5px;" id="status">SYNCING SERVER...</div>
-    </div>
-    <div style="width:100%; max-width:480px; margin-bottom:5px; font-size:11px; color:#555; text-transform:uppercase; letter-spacing:1px; font-weight:bold;">Recent 50 Outcomes</div>
-    <div class="history-list" id="history-box"><div class="history-item" style="justify-content:center; color:#444;">No history yet...</div></div>
+
     <script>
-        setInterval(() => { fetch('/heartbeat', { method: 'POST' }); }, 30000);
-        function updateData() {
+        // --- HEARTBEAT SYSTEM (Keeps session alive) ---
+        setInterval(() => {
+            fetch('/heartbeat', {method: 'POST'});
+        }, 5000); // Ping every 5 seconds
+
+        function update() {
             fetch('/data').then(r => r.json()).then(d => {
-                document.getElementById('period').innerText = "PERIOD: " + d.period;
-                document.getElementById('status').innerText = d.status_text;
+                // Period
+                document.getElementById('period').innerText = "PERIOD " + d.period;
+                
+                // Prediction Display
                 const p = document.getElementById('prediction');
                 p.innerText = d.prediction;
-                p.className = 'prediction-display';
-                if (d.prediction === 'BIG') p.classList.add('res-big');
-                else if (d.prediction === 'SMALL') p.classList.add('res-small');
-                else p.classList.add('res-wait');
-                const timeLeft = d.timer || 0;
-                const sec = timeLeft % 60;
-                const timeStr = `00:${sec < 10 ? '0' : ''}${sec}`;
-                document.getElementById('countdown').innerText = timeStr;
-                document.getElementById('timer-bar').style.width = ((timeLeft / 60) * 100) + "%";
-                if (d.stats) {
-                    document.getElementById('stat-wins').innerText = d.stats.wins;
-                    document.getElementById('stat-loss').innerText = d.stats.losses;
-                    document.getElementById('stat-acc').innerText = d.stats.accuracy;
-                }
-                const histBox = document.getElementById('history-box');
-                if (d.history && d.history.length > 0) {
-                    let html = "";
-                    d.history.forEach(h => {
-                        let resClass = 'h-pending';
-                        let icon = '⏳';
-                        if (h.result === 'WIN') { resClass = 'h-win'; icon = '✅'; }
-                        if (h.result === 'LOSS') { resClass = 'h-loss'; icon = '❌'; }
-                        html += `<div class="history-item"><span class="h-period">${h.period}</span><span style="font-weight:bold;">${h.pred}</span><span class="${resClass}">${icon} ${h.result}</span></div>`;
-                    });
-                    histBox.innerHTML = html;
-                }
-            }).catch(err => console.log(err));
+                p.className = 'prediction'; // reset
+                if (d.prediction === 'BIG') p.classList.add('big');
+                else if (d.prediction === 'SMALL') p.classList.add('small');
+                else p.classList.add('wait');
+                
+                // Details
+                document.getElementById('status').innerText = d.status_text;
+                document.getElementById('conf').innerText = d.confidence || "0%";
+                document.getElementById('strat').innerText = d.strategy || "---";
+                document.getElementById('wins').innerText = d.stats ? d.stats.wins : 0;
+                document.getElementById('losses').innerText = d.stats ? d.stats.losses : 0;
+
+                // Timer Visual
+                const time = d.timer || 0;
+                const pct = (time / 60) * 100;
+                document.getElementById('timer').style.width = pct + "%";
+            });
         }
-        setInterval(updateData, 1000);
-        updateData();
+        
+        setInterval(update, 1000); // Update data every second
     </script>
 </body>
 </html>
