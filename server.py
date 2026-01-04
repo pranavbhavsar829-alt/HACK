@@ -12,44 +12,94 @@ import time
 import threading
 import asyncio
 from datetime import datetime, timedelta
-from database_handler import create_connection, DB_PATH, ensure_setup, cleanup_inactive_sessions
 
-# --- IMPORT FETCHER TO RUN AUTOMATICALLY ---
+# --- IMPORT FETCHER ---
 import fetcher
 
 app = Flask(__name__)
 app.secret_key = "TITAN_SECURE_KEY_CHANGE_THIS" 
 ADMIN_PASSWORD = "admin" 
-OFFLINE_SECRET = "TITAN_OFFLINE_SECRET_CODE_123" # Must match local_generator.py
+OFFLINE_SECRET = "TITAN_OFFLINE_SECRET_CODE_123" 
 MASTER_KEY = "TITAN-PERM-ADMIN" 
 
-DASHBOARD_FILE = os.path.join(DB_PATH, 'dashboard_data.json')
+# --- ABSOLUTE PATH DB SETUP (CRITICAL FIX) ---
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+DB_NAME = 'titan_db.sqlite'
+DB_PATH = os.path.join(BASE_DIR, DB_NAME)
+DASHBOARD_FILE = os.path.join(BASE_DIR, 'dashboard_data.json')
 
-# --- DB SETUP ---
+def create_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
 def ensure_tables():
-    ensure_setup()
     conn = create_connection()
-    conn.execute("CREATE TABLE IF NOT EXISTS blacklisted_keys (key_code TEXT PRIMARY KEY, reason TEXT, banned_at TEXT)")
+    # Table for Legacy Online Keys
+    conn.execute('''CREATE TABLE IF NOT EXISTS access_keys (
+                    key_code TEXT PRIMARY KEY,
+                    note TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    is_active INTEGER DEFAULT 1,
+                    expires_at TEXT,
+                    max_devices INTEGER DEFAULT 1
+                )''')
+    # Table for Active Sessions (Live Users)
+    conn.execute('''CREATE TABLE IF NOT EXISTS active_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    key_code TEXT,
+                    last_seen TIMESTAMP,
+                    ip_address TEXT
+                )''')
+    # Table for Banned Keys (Blacklist)
+    conn.execute('''CREATE TABLE IF NOT EXISTS blacklisted_keys (
+                    key_code TEXT PRIMARY KEY, 
+                    reason TEXT, 
+                    banned_at TEXT
+                )''')
     conn.commit()
     conn.close()
 
+def cleanup_inactive_sessions():
+    """Removes sessions that haven't sent a heartbeat in 2 minutes"""
+    conn = create_connection()
+    limit = datetime.now() - timedelta(minutes=2)
+    conn.execute("DELETE FROM active_sessions WHERE last_seen < ?", (limit,))
+    conn.commit()
+    conn.close()
+
+# Run Setup
 ensure_tables()
 
-# --- BACKGROUND WORKER (The "Always Online" Fix) ---
+# --- BACKGROUND WORKER ---
 def start_fetcher_loop():
-    """Starts the predictor in a background thread."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    print("[SYSTEM] Auto-Starting Titan Predictor Engine...")
+    print("[SYSTEM] Auto-Starting Predictor...")
     try:
         loop.run_until_complete(fetcher.main_loop())
     except Exception as e:
-        print(f"[CRITICAL ERROR] Fetcher crashed: {e}")
+        print(f"[ERROR] Fetcher loop failed: {e}")
 
-# Only start the thread once
 if os.environ.get("WERKZEUG_RUN_MAIN") != "true":
     t = threading.Thread(target=start_fetcher_loop, daemon=True)
     t.start()
+
+# --- HELPER: DECODE NAME FROM KEY ---
+def get_name_from_key(key):
+    if key == MASTER_KEY: return "ADMIN"
+    if not key.startswith("TITAN-"): return "Legacy DB Key"
+    try:
+        # TITAN-PAYLOAD-SIG
+        payload_b64 = key.split('-')[1]
+        padding = len(payload_b64) % 4
+        if padding: payload_b64 += '=' * (4 - padding)
+        payload = base64.urlsafe_b64decode(payload_b64).decode()
+        parts = payload.split('|')
+        # Format: timestamp|max|name
+        if len(parts) >= 3: return parts[2]
+        return "Unknown User"
+    except: return "Error"
 
 # --- AUTH LOGIC ---
 def login_required(f):
@@ -66,7 +116,7 @@ def admin_required(f):
         return f(*args, **kwargs)
     return wrapped
 
-# --- KEY VERIFICATION (OFFLINE + ONLINE) ---
+# --- VALIDATION ---
 def is_key_blacklisted(key):
     conn = create_connection()
     row = conn.execute("SELECT * FROM blacklisted_keys WHERE key_code = ?", (key,)).fetchone()
@@ -79,6 +129,7 @@ def verify_stateless_key(key_input):
         if len(parts) != 3 or parts[0] != "TITAN": return False, "INVALID FORMAT"
         payload_encoded = parts[1]
         signature_input = parts[2]
+        
         try:
             padding = len(payload_encoded) % 4
             if padding: payload_encoded += '=' * (4 - padding)
@@ -89,7 +140,7 @@ def verify_stateless_key(key_input):
         except: return False, "CORRUPT KEY"
 
         expected_sig = hmac.new(OFFLINE_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:8].upper()
-        if not hmac.compare_digest(expected_sig, signature_input): return False, "FAKE KEY DETECTED"
+        if not hmac.compare_digest(expected_sig, signature_input): return False, "FAKE KEY"
         if time.time() > expiry_ts: return False, "KEY EXPIRED"
         if is_key_blacklisted(key_input): return False, "KEY BANNED"
         return True, "OK"
@@ -100,7 +151,7 @@ def validate_key_and_login(key_input):
     if key_input == MASTER_KEY:
         session['session_uuid'] = str(uuid.uuid4())
         return True, "OK"
-    
+
     # 1. Offline Check
     if key_input.startswith("TITAN-"):
         is_valid, msg = verify_stateless_key(key_input)
@@ -115,18 +166,20 @@ def validate_key_and_login(key_input):
             return True, "OK"
         else: return False, msg
 
-    # 2. Database Check (Legacy)
+    # 2. Database Check
     conn = create_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM access_keys WHERE key_code = ? AND is_active = 1", (key_input,))
     row = cur.fetchone()
     if not row: conn.close(); return False, "INVALID KEY"
     if is_key_blacklisted(key_input): conn.close(); return False, "KEY BANNED"
-    if row[4] and datetime.now() > datetime.strptime(row[4], '%Y-%m-%d %H:%M:%S.%f'): conn.close(); return False, "KEY EXPIRED"
+    if row['expires_at'] and datetime.now() > datetime.strptime(row['expires_at'], '%Y-%m-%d %H:%M:%S.%f'):
+        conn.close(); return False, "KEY EXPIRED"
     
-    max_devices = row[5] if len(row) > 5 else 1
+    max_devices = row['max_devices']
     cur.execute("SELECT COUNT(*) FROM active_sessions WHERE key_code = ?", (key_input,))
     current_users = cur.fetchone()[0]
+    
     if current_users < max_devices or (session.get('session_uuid') and check_is_active(session.get('session_uuid'))):
         new_uuid = session.get('session_uuid') or str(uuid.uuid4())
         session['session_uuid'] = new_uuid
@@ -162,6 +215,13 @@ def login():
 
 @app.route('/heartbeat', methods=['POST'])
 def heartbeat():
+    if session.get('authenticated') and session.get('session_uuid'):
+        try:
+            conn = create_connection()
+            conn.execute("UPDATE active_sessions SET last_seen = ? WHERE session_id = ?", (datetime.now(), session['session_uuid']))
+            conn.commit()
+            conn.close()
+        except: pass
     return jsonify({"status": "alive"})
 
 @app.route('/admin_login', methods=['GET', 'POST'])
@@ -176,24 +236,65 @@ def admin_login():
 @admin_required
 def admin_panel():
     cleanup_inactive_sessions()
+    conn = create_connection()
+    
+    # Handle Ban Action
     if request.method == 'POST' and 'ban_key' in request.form:
         b_key = request.form.get('ban_key').strip()
-        conn = create_connection()
         conn.execute("INSERT OR REPLACE INTO blacklisted_keys (key_code, reason, banned_at) VALUES (?, ?, ?)", (b_key, "Admin Ban", datetime.now()))
         conn.commit()
-        conn.close()
-    
-    conn = create_connection()
-    keys = conn.execute("SELECT * FROM access_keys ORDER BY created_at DESC").fetchall()
+        conn.execute("DELETE FROM active_sessions WHERE key_code = ?", (b_key,))
+        conn.commit()
+
+    # Get Data
+    active_sessions = conn.execute("SELECT * FROM active_sessions ORDER BY last_seen DESC").fetchall()
     banned = conn.execute("SELECT * FROM blacklisted_keys ORDER BY banned_at DESC").fetchall()
     conn.close()
     
-    rows = "".join([f"<tr><td>{k[0]}</td><td>{k[1]}</td><td>Online DB</td></tr>" for k in keys])
-    ban_rows = "".join([f"<tr><td>{b[0]}</td><td style='color:red'>BANNED</td></tr>" for b in banned])
-    return f"""<body style="font-family:monospace; padding:20px;"><h1>ADMIN</h1>
-            <div style="background:#ffdddd; padding:15px; border:1px solid red; margin-bottom:20px;">
-            <h3>🚫 BAN KEY</h3><form method="POST"><input type="text" name="ban_key" placeholder="Key..."><button>BAN</button></form></div>
-            <h3>Banned</h3><table border="1">{ban_rows}</table><h3>Active</h3><table border="1">{rows}</table></body>"""
+    # Render Active Users Table
+    active_rows = ""
+    for s in active_sessions:
+        k = s['key_code']
+        name = get_name_from_key(k)
+        active_rows += f"""
+        <tr>
+            <td style="color:#00ff41; font-weight:bold;">{name}</td>
+            <td style="font-size:12px;">{k[:20]}...</td>
+            <td>{s['last_seen']}</td>
+            <td>
+                <form method="POST" style="margin:0;">
+                    <input type="hidden" name="ban_key" value="{k}">
+                    <button style="background:red; color:white; border:none; cursor:pointer; font-size:10px; padding:3px 8px;">BAN 🚫</button>
+                </form>
+            </td>
+        </tr>"""
+
+    # Render Banned Table
+    ban_rows = "".join([f"<tr><td>{b[0][:25]}...</td><td style='color:red'>BANNED</td></tr>" for b in banned])
+
+    return f"""<body style="font-family:monospace; padding:20px; background:#f0f0f0;">
+            <h1>ADMIN PANEL - LIVE USERS</h1>
+            
+            <div style="background:white; padding:15px; border:1px solid #ccc; margin-bottom:20px;">
+                <h3 style="margin-top:0; color:green;">🟢 LIVE ACTIVE USERS ({len(active_sessions)})</h3>
+                <p>Offline Keys only appear here when a user is <b>currently logged in</b>.</p>
+                <table border="1" cellpadding="5" style="width:100%; border-collapse:collapse;">
+                    <tr style="background:#eee;"><th>User Name</th><th>Key (Snippet)</th><th>Last Seen</th><th>Action</th></tr>
+                    {active_rows if active_rows else "<tr><td colspan='4' style='text-align:center;'>No users currently logged in.</td></tr>"}
+                </table>
+            </div>
+
+            <div style="background:#ffdddd; padding:15px; border:1px solid red;">
+                <h3 style="margin-top:0; color:darkred;">🚫 BANNED KEYS</h3>
+                <form method="POST" style="margin-bottom:10px;">
+                    <input type="text" name="ban_key" placeholder="Paste Key to Ban..." style="width:300px;">
+                    <button>Manually Ban</button>
+                </form>
+                <table border="1" cellpadding="5" style="width:100%; background:white;">
+                    {ban_rows}
+                </table>
+            </div>
+            </body>"""
 
 @app.route('/logout')
 def logout():
