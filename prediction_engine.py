@@ -8,13 +8,13 @@
     | |   _| |_   | |        | |\  |       \  /   / /  | |_| | |_| |
     |_|  |_____|  |_|        |_| \_|        \/   /_/    \___/ \___/ 
                                                                     
-  TITAN V202 - DEEP THOUGHT EDITION (TIME-WINDOW OPTIMIZED)
+  TITAN V202 - ADVANCED TRIDENT (HYBRID CORE)
   
-  STRATEGY:
-  1. INITIAL SCAN: Fast analysis using Trident Engines.
-  2. DEEP THOUGHT LOOP (20s): Cross-validates the signal against history.
-  3. BACKTEST VERIFICATION: Checks if this specific signal is currently winning.
-  4. SNIPER EXECUTION: only fires if the signal survives the 20s stress test.
+  [SYSTEM UPGRADES]
+  1. DEEP FRACTAL MEMORY: Scans 2,000 rounds for exact pattern replays.
+  2. NEURAL PHYSICS: Uses Momentum Mass (Velocity*Accel) as a neural input.
+  3. QUANTUM CHAOS: Z-Score Reversion protected by Variance Analysis.
+  4. SNIPER STAKING: Level 1 (Standard), Level 2 (Recovery), Level 3 (Sniper).
 =============================================================================
 """
 
@@ -25,42 +25,52 @@ import time
 from typing import Dict, List, Optional, Any, Tuple
 
 # =============================================================================
-# [PART 1] CONFIGURATION
+# [PART 1] CONFIGURATION & CONSTANTS
 # =============================================================================
 
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [TITAN_DEEP] %(message)s', datefmt='%H:%M:%S')
+# Configure Logging
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] [TITAN_V202] %(message)s', datefmt='%H:%M:%S')
 
 class GameConstants:
     BIG = "BIG"
     SMALL = "SMALL" 
     SKIP = "SKIP"
     
-    # We use a large buffer for the Deep Thought backtesting
-    MIN_HISTORY_FOR_PREDICTION = 100 
-    
-    # CRITICAL: How many seconds to think?
-    THINKING_TIME_SECONDS = 18  # Leaves buffer for network latency
+    # Expanded history buffer for Deep Pattern Logic
+    MIN_HISTORY_FOR_PREDICTION = 50 
 
 class RiskConfig:
-    # Bankroll
-    BASE_RISK_PERCENT = 0.05
+    # -------------------------------------------------------------------------
+    # BANKROLL MANAGEMENT
+    # -------------------------------------------------------------------------
+    BASE_RISK_PERCENT = 0.05    # 5% Base Risk
     MIN_BET_AMOUNT = 10
     MAX_BET_AMOUNT = 100000
     
-    # Confidence Thresholds
-    LVL1_MIN_CONFIDENCE = 0.65  # Higher standard
-    LVL2_MIN_CONFIDENCE = 0.75
-    LVL3_MIN_CONFIDENCE = 0.88
+    # -------------------------------------------------------------------------
+    # CONFIDENCE THRESHOLDS (THE TRIDENT LEVELS)
+    # -------------------------------------------------------------------------
+    
+    # LEVEL 1: STANDARD (0 Losses)
+    LVL1_MIN_CONFIDENCE = 0.60  # 60%
+    
+    # LEVEL 2: RECOVERY (1 Loss)
+    LVL2_MIN_CONFIDENCE = 0.75  # 75% (Stricter)
+    
+    # LEVEL 3: SNIPER (2+ Losses)
+    LVL3_MIN_CONFIDENCE = 0.85  # 85% (Only Perfect Shots)
 
-    # Multipliers
-    TIER_1_MULT = 1.0
-    TIER_2_MULT = 2.0
-    TIER_3_MULT = 4.0
+    # -------------------------------------------------------------------------
+    # MARTINGALE MULTIPLIERS
+    # -------------------------------------------------------------------------
+    TIER_1_MULT = 1.0   # Standard Bet
+    TIER_2_MULT = 2.0   # Recovery Bet
+    TIER_3_MULT = 4.0   # Sniper Bet ( Aggressive Recovery)
     
     STOP_LOSS_STREAK = 8
 
 # =============================================================================
-# [PART 2] MATH CORE
+# [PART 2] ADVANCED MATH LIBRARY
 # =============================================================================
 
 def safe_float(value: Any) -> float:
@@ -76,8 +86,11 @@ def get_outcome_from_number(n: Any) -> Optional[str]:
     return None
 
 def sigmoid(x):
-    try: return 1 / (1 + math.exp(-x))
-    except OverflowError: return 0.0 if x < 0 else 1.0
+    """Neural Activation Function"""
+    try:
+        return 1 / (1 + math.exp(-x))
+    except OverflowError:
+        return 0.0 if x < 0 else 1.0
 
 def calculate_mean(data: List[float]) -> float:
     return sum(data) / len(data) if data else 0.0
@@ -89,302 +102,296 @@ def calculate_stddev(data: List[float]) -> float:
     return math.sqrt(variance)
 
 def calculate_momentum_mass(data: List[float]) -> float:
+    """
+    PHYSICS UPGRADE: Calculates 'Momentum Mass' (Velocity * Acceleration)
+    Used to detect if the trend is too heavy to stop.
+    """
     if len(data) < 5: return 0.0
+    
+    # 1st Derivative (Velocity)
     vel = [data[i+1]-data[i] for i in range(len(data)-1)]
-    if not vel: return 0.0
     avg_vel = sum(vel) / len(vel)
+    
+    # 2nd Derivative (Acceleration)
     acc = [vel[i+1]-vel[i] for i in range(len(vel)-1)]
-    if not acc: return 0.0
     avg_acc = sum(acc) / len(acc)
+    
     return avg_vel * avg_acc
 
 # =============================================================================
-# [PART 3] TRIDENT ENGINES
+# [PART 3] THE TRIDENT ENGINES (ADVANCED)
 # =============================================================================
 
-# Engine 1: Quantum Chaos
+# -----------------------------------------------------------------------------
+# ENGINE 1: QUANTUM CHAOS (Adaptive Reversion + Variance Protection)
+# -----------------------------------------------------------------------------
 def engine_quantum_chaos(history: List[Dict]) -> Optional[Dict]:
+    """
+    Detects 'Reversion to Mean' but checks Variance (Chaos) first.
+    If Variance is too high, it skips (The 'Chaos Guard').
+    """
     try:
         numbers = [safe_float(d.get('actual_number')) for d in history[-30:]]
         if len(numbers) < 20: return None
         
-        # Variance Guard
+        # 1. CHAOS GUARD (Variance Check)
         variance = statistics.pvariance(numbers[-5:])
-        if variance > 2.5: return None 
-        
+        if variance > 2.5: 
+            return None # Too Chaotic, Skip
+            
+        # 2. Z-SCORE CALCULATION
         mean = calculate_mean(numbers)
         std = calculate_stddev(numbers)
         if std == 0: return None
         
-        z_score = (numbers[-1] - mean) / std
+        current_val = numbers[-1]
+        z_score = (current_val - mean) / std
         
-        # Dragon Trap
-        if abs(z_score) > 2.8: return None 
+        # 3. DRAGON TRAP (Don't bet against massive trends)
+        if abs(z_score) > 2.8:
+            return None 
         
         strength = min(abs(z_score) / 2.5, 1.0) 
         
         if z_score > 1.8:
-            return {'prediction': GameConstants.SMALL, 'weight': strength, 'source': 'Quantum'}
+            return {'prediction': GameConstants.SMALL, 'weight': strength, 'source': f'Quantum(Z:{z_score:.1f}|Stable)'}
         elif z_score < -1.8:
-            return {'prediction': GameConstants.BIG, 'weight': strength, 'source': 'Quantum'}
+            return {'prediction': GameConstants.BIG, 'weight': strength, 'source': f'Quantum(Z:{z_score:.1f}|Stable)'}
+            
         return None
     except: return None
 
-# Engine 2: Deep Fractal
+# -----------------------------------------------------------------------------
+# ENGINE 2: DEEP FRACTAL MEMORY (2000-Round Scan)
+# -----------------------------------------------------------------------------
 def engine_deep_fractal(history: List[Dict]) -> Optional[Dict]:
+    """
+    Scans the last 2,000 rounds for the current pattern.
+    Returns the specific historical probability.
+    """
     try:
         if len(history) < 60: return None
+        
+        # Convert entire history to outcomes
         outcomes = [get_outcome_from_number(d.get('actual_number')) for d in history]
+        
+        # We need the raw list of strings for comparison
         raw_outcomes = outcomes
         
         best_signal = None
+        best_depth = 0
         
         # Scan lengths 7 down to 3
         for depth in range(7, 2, -1):
             if len(outcomes) < depth + 1: continue
+            
             target = raw_outcomes[-depth:]
-            history_slice = raw_outcomes[:-1]
+            history_slice = raw_outcomes[:-1] # Look at the past
             
             match_count = 0
             next_big = 0
             
-            # Limit scan to last 1000 for speed
-            scan_limit = min(len(history_slice), 1000)
+            # Limited scan (Last 2000)
+            scan_limit = min(len(history_slice), 2000)
             start_idx = len(history_slice) - scan_limit
             
+            # Linear Scan
             for i in range(len(history_slice) - depth - 1, start_idx, -1):
                 if history_slice[i : i+depth] == target:
                     match_count += 1
                     if history_slice[i+depth] == GameConstants.BIG:
                         next_big += 1
                         
+            # Analyze Matches
             if match_count >= 3:
                 prob_big = next_big / match_count
+                prob_small = 1.0 - prob_big
                 
+                # We want strong probabilities (>60%)
                 if prob_big >= 0.65:
-                    return {'prediction': GameConstants.BIG, 'weight': prob_big * 1.5, 'source': f'Fractal-D{depth}'}
-                elif prob_big <= 0.35:
-                    return {'prediction': GameConstants.SMALL, 'weight': (1.0-prob_big) * 1.5, 'source': f'Fractal-D{depth}'}
-        return None
+                    weight = prob_big
+                    best_signal = {
+                        'prediction': GameConstants.BIG, 
+                        'weight': weight * 1.5, # High priority
+                        'source': f'Fractal-D{depth}(Match:{match_count}|{prob_big:.0%})'
+                    }
+                    best_depth = depth
+                    break # Found a long match, stop looking
+                    
+                elif prob_small >= 0.65:
+                    weight = prob_small
+                    best_signal = {
+                        'prediction': GameConstants.SMALL, 
+                        'weight': weight * 1.5,
+                        'source': f'Fractal-D{depth}(Match:{match_count}|{prob_small:.0%})'
+                    }
+                    best_depth = depth
+                    break
+
+        return best_signal
     except: return None
 
-# Engine 3: Neural Physics
+# -----------------------------------------------------------------------------
+# ENGINE 3: NEURAL PHYSICS (Mass + Momentum)
+# -----------------------------------------------------------------------------
 def engine_neural_physics(history: List[Dict]) -> Optional[Dict]:
+    """
+    Fused Neural Network: Inputs are RSI, Momentum, and PHYSICS MASS.
+    """
     try:
         numbers = [safe_float(d.get('actual_number')) for d in history[-40:]]
         if len(numbers) < 25: return None
         
-        # RSI
+        # INPUT 1: RSI (Relative Strength)
         deltas = [numbers[i] - numbers[i-1] for i in range(1, len(numbers))]
         gains = [d for d in deltas if d > 0]
         losses = [abs(d) for d in deltas if d < 0]
         avg_gain = sum(gains[-14:]) / 14 if gains else 0
         avg_loss = sum(losses[-14:]) / 14 if losses else 0.001
         rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        norm_rsi = (rsi - 50) / 50
+        rsi_val = 100 - (100 / (1 + rs))
+        norm_rsi = (rsi_val - 50) / 50 # -1 to 1
         
-        # Mass
+        # INPUT 2: MOMENTUM MASS (Physics)
         mass = calculate_momentum_mass(numbers[-6:])
-        norm_mass = max(min(mass / 10.0, 1.0), -1.0)
+        norm_mass = max(min(mass / 10.0, 1.0), -1.0) # Clamp -1 to 1
         
-        # Calc
-        z = (norm_rsi * -1.2) + (norm_mass * -1.5) + 0.1
+        # NEURAL WEIGHTS
+        w_rsi = -1.2
+        w_mass = -1.5 # High mass means reversal likely (Negative correlation)
+        bias = 0.1
+        
+        # PERCEPTRON CALCULATION
+        z = (norm_rsi * w_rsi) + (norm_mass * w_mass) + bias
         activation = sigmoid(z)
-        dist = abs(activation - 0.5)
+        
+        dist_from_neutral = abs(activation - 0.5)
         
         if activation > 0.65:
-            return {'prediction': GameConstants.BIG, 'weight': dist * 2.0, 'source': 'NeuralPhys'}
+            return {'prediction': GameConstants.BIG, 'weight': dist_from_neutral * 2.0, 'source': f'NeuralPhys({activation:.2f})'}
         elif activation < 0.35:
-            return {'prediction': GameConstants.SMALL, 'weight': dist * 2.0, 'source': 'NeuralPhys'}
+            return {'prediction': GameConstants.SMALL, 'weight': dist_from_neutral * 2.0, 'source': f'NeuralPhys({activation:.2f})'}
+            
         return None
     except: return None
 
 # =============================================================================
-# [PART 4] DEEP THOUGHT VERIFICATION (THE 20-SECOND BRAIN)
-# =============================================================================
-
-class DeepThoughtCore:
-    
-    @staticmethod
-    def stress_test_signal(history: List[Dict], candidate_signal: str) -> float:
-        """
-        Runs a backtest simulation on the CURRENT signal.
-        Does this signal actually win in the current market conditions?
-        Returns a 'Validity Score' (0.0 to 1.0)
-        """
-        try:
-            # We look at the last 100 rounds
-            test_window = history[-100:]
-            wins = 0
-            losses = 0
-            
-            # Replay the last 100 rounds
-            for i in range(50, len(test_window)-1):
-                past_slice = test_window[:i]
-                actual_next = get_outcome_from_number(test_window[i]['actual_number'])
-                
-                # Ask engines what they WOULD have said
-                s1 = engine_quantum_chaos(past_slice)
-                s2 = engine_deep_fractal(past_slice)
-                s3 = engine_neural_physics(past_slice)
-                
-                signals = [s for s in [s1, s2, s3] if s]
-                if not signals: continue
-                
-                # Simple vote
-                big_w = sum(s['weight'] for s in signals if s['prediction'] == GameConstants.BIG)
-                small_w = sum(s['weight'] for s in signals if s['prediction'] == GameConstants.SMALL)
-                
-                consensus = GameConstants.BIG if big_w > small_w else GameConstants.SMALL
-                
-                # Check accuracy
-                if consensus == candidate_signal and big_w + small_w > 0.4:
-                    if consensus == actual_next:
-                        wins += 1
-                    else:
-                        losses += 1
-                        
-            total_trades = wins + losses
-            if total_trades < 3: return 0.5 # Neutral if no data
-            
-            accuracy = wins / total_trades
-            return accuracy
-            
-        except: return 0.5
-
-
-# =============================================================================
-# [PART 5] MAIN EXECUTION
+# [PART 4] THE ARCHITECT (MAIN LOGIC)
 # =============================================================================
 
 class GlobalStateManager:
     def __init__(self):
         self.loss_streak = 0
+        self.last_outcome = None
+        
 state_manager = GlobalStateManager()
 
 def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_result: Optional[str] = None) -> Dict:
-    
-    start_time = time.time() # START THE TIMER
-    
-    # 1. Update Streak
+    """
+    MAIN ENTRY POINT
+    """
+    # 1. Update Streak based on result
     if last_result:
         actual_outcome = get_outcome_from_number(history[-1]['actual_number'])
-        if last_result != GameConstants.SKIP:
-            if last_result == actual_outcome:
-                state_manager.loss_streak = 0
-            else:
-                state_manager.loss_streak += 1
-                
+        if last_result == GameConstants.SKIP:
+            pass
+        elif last_result == actual_outcome:
+            state_manager.loss_streak = 0
+        else:
+            state_manager.loss_streak += 1
+            
     streak = state_manager.loss_streak
     
-    # 2. Violet Guard
+    # -------------------------------------------------------------------------
+    # VIOLET GUARD (0 & 5 PROTECTION)
+    # -------------------------------------------------------------------------
     try:
-        if int(safe_float(history[-1]['actual_number'])) in [0, 5]:
-            return {'finalDecision': "SKIP", 'confidence': 0, 'positionsize': 0, 'level': "RESET", 'reason': "Violet Guard", 'topsignals': []}
+        last_num = int(safe_float(history[-1]['actual_number']))
+        if last_num in [0, 5]:
+            return {
+                'finalDecision': GameConstants.SKIP,
+                'confidence': 0, 'positionsize': 0,
+                'level': 'VIOLET_GUARD', 'reason': f'Reset Num ({last_num})', 'topsignals': []
+            }
     except: pass
     
-    # 3. INITIAL SIGNAL GENERATION
+    # 2. RUN ADVANCED TRIDENT ENGINES
+    signals = []
+    
+    # Engine 1: Quantum Chaos
     s1 = engine_quantum_chaos(history)
+    if s1: signals.append(s1)
+    
+    # Engine 2: Deep Fractal Memory (The requested Pattern Results)
     s2 = engine_deep_fractal(history)
+    if s2: signals.append(s2)
+    
+    # Engine 3: Neural Physics
     s3 = engine_neural_physics(history)
+    if s3: signals.append(s3)
     
-    signals = [s for s in [s1, s2, s3] if s]
+    # 3. AGGREGATE SCORES
+    big_weight = sum(s['weight'] for s in signals if s['prediction'] == GameConstants.BIG)
+    small_weight = sum(s['weight'] for s in signals if s['prediction'] == GameConstants.SMALL)
     
-    big_w = sum(s['weight'] for s in signals if s['prediction'] == GameConstants.BIG)
-    small_w = sum(s['weight'] for s in signals if s['prediction'] == GameConstants.SMALL)
+    total_weight = big_weight + small_weight
     
-    # Preliminary Decision
-    if big_w > small_w:
-        candidate_pred = GameConstants.BIG
-        raw_confidence = big_w / (big_w + small_w + 0.1)
+    # MINIMUM QUORUM (Must have decent signal strength)
+    if total_weight < 0.40:
+         return {'finalDecision': GameConstants.SKIP, 'confidence': 0, 'positionsize': 0, 'level': 'WAITING', 'reason': 'Weak Signal', 'topsignals': []}
+         
+    # 4. DETERMINE CONFIDENCE
+    if big_weight > small_weight:
+        final_pred = GameConstants.BIG
+        confidence = big_weight / (total_weight + 0.1) 
     else:
-        candidate_pred = GameConstants.SMALL
-        raw_confidence = small_w / (big_w + small_w + 0.1)
-        
-    # If initial signal is too weak, skip immediately
-    if (big_w + small_w) < 0.4:
-         return {'finalDecision': "SKIP", 'confidence': 0, 'positionsize': 0, 'level': "WAIT", 'reason': "Weak Initial Signal", 'topsignals': []}
-
-    # =========================================================================
-    # 4. THE DEEP THOUGHT LOOP (TIME WINDOW UTILIZATION)
-    # =========================================================================
+        final_pred = GameConstants.SMALL
+        confidence = small_weight / (total_weight + 0.1)
     
-    # We have a candidate prediction. Now we spend time validating it.
-    # We loop until we are close to our time limit.
+    confidence = min(confidence, 0.99)
+    active_sources = [s['source'] for s in signals]
     
-    validation_score = 0.5
-    iterations = 0
-    
-    while (time.time() - start_time) < GameConstants.THINKING_TIME_SECONDS:
-        # Perform a stress test
-        # We run the simulation multiple times (conceptually) or perform a deep scan
-        # Since the 'stress_test_signal' is heavy, one run is enough, but we can
-        # delay return to allow the system to "settle" or run additional checks.
-        
-        # Here, we run the Deep Backtest once, which takes computational time
-        validation_score = DeepThoughtCore.stress_test_signal(history, candidate_pred)
-        
-        iterations += 1
-        
-        # If the backtest is TERRIBLE (< 40% winrate recently), we break early and abort
-        if validation_score < 0.40:
-            break
-            
-        # If the backtest is AMAZING (> 80%), we lock it in
-        if validation_score > 0.80:
-            break
-            
-        # Artificial delay to ensure we don't spam CPU if the calculation was too fast
-        # (Simulating "waiting for market settle" if this were live stream data)
-        time.sleep(0.1) 
-        
-    # =========================================================================
-    # 5. FINAL SYNTHESIS
-    # =========================================================================
-    
-    # Adjust Confidence based on Deep Thought
-    final_confidence = (raw_confidence + validation_score) / 2
-    
-    # If the Deep Thought validation failed, we KILL the trade
-    if validation_score < 0.50:
-        return {'finalDecision': "SKIP", 'confidence': 0, 'positionsize': 0, 'level': "ABORT", 'reason': f"DeepThought Failed ({validation_score:.0%})", 'topsignals': []}
-        
-    # 6. STAKING LOGIC
+    # 5. SNIPER STAKING LOGIC
     stake = 0
     level = "SKIP"
-    reason = f"Conf {final_confidence:.0%} | Valid {validation_score:.0%}"
+    reason = f"Conf {confidence:.0%}"
     
     base_bet = max(current_bankroll * RiskConfig.BASE_RISK_PERCENT, RiskConfig.MIN_BET_AMOUNT)
     
-    active_sources = [s['source'] for s in signals]
-    active_sources.append(f"DeepThought({validation_score:.2f})")
+    # --- LEVEL LOGIC ---
     
-    # Sniper Levels
+    # LEVEL 3: SNIPER (2+ Losses) -> Needs 85% Confidence
     if streak >= 2:
-        if final_confidence >= RiskConfig.LVL3_MIN_CONFIDENCE:
+        if confidence >= RiskConfig.LVL3_MIN_CONFIDENCE:
             stake = base_bet * RiskConfig.TIER_3_MULT
             level = "🔥 SNIPER"
+            reason = "High Confidence Lock"
         else:
-            level = "SKIP (Recov)"
+            level = "SKIP (Recover)"
+            reason = "Waiting for Perfect Shot"
+            
+    # LEVEL 2: RECOVERY (1 Loss) -> Needs 75% Confidence
     elif streak == 1:
-        if final_confidence >= RiskConfig.LVL2_MIN_CONFIDENCE:
+        if confidence >= RiskConfig.LVL2_MIN_CONFIDENCE:
             stake = base_bet * RiskConfig.TIER_2_MULT
             level = "RECOVERY"
         else:
-            level = "SKIP (Recov)"
+            level = "SKIP (Recover)"
+    
+    # LEVEL 1: STANDARD (0 Losses) -> Needs 60% Confidence
     else:
-        if final_confidence >= RiskConfig.LVL1_MIN_CONFIDENCE:
+        if confidence >= RiskConfig.LVL1_MIN_CONFIDENCE:
             stake = base_bet * RiskConfig.TIER_1_MULT
             level = "STANDARD"
         else:
             level = "SKIP"
             
+    # Safety Cap
     if stake > current_bankroll * 0.4: stake = current_bankroll * 0.4
     
     return {
-        'finalDecision': candidate_pred if stake > 0 else "SKIP",
-        'confidence': final_confidence,
+        'finalDecision': final_pred if stake > 0 else GameConstants.SKIP,
+        'confidence': confidence,
         'positionsize': int(stake),
         'level': level,
         'reason': reason,
@@ -392,4 +399,4 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
     }
 
 if __name__ == "__main__":
-    print("TITAN V202 DEEP THOUGHT: ONLINE")
+    print("TITAN V202 ADVANCED TRIDENT: ONLINE")
