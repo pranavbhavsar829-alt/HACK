@@ -1,22 +1,4 @@
-#!/usr/bin/env python3
-"""
-=============================================================================
-  _______ _____ _______       _   _     __      _______  ___   ___  
- |__   __|_   _|__   __|     | \ | |    \ \    / /___  |/ _ \ / _ \ 
-    | |    | |    | |  ____  |  \| |_____\ \  / /   / /| | | | | | |
-    | |    | |    | | |____| | . ` |______\ \/ /   / / | | | | | | |
-    | |   _| |_   | |        | |\  |       \  /   / /  | |_| | |_| |
-    |_|  |_____|  |_|        |_| \_|        \/   /_/    \___/ \___/ 
-                                                                    
-  TITAN V202 - ADVANCED TRIDENT (HYBRID CORE)
-  
-  [SYSTEM UPGRADES]
-  1. DEEP FRACTAL MEMORY: Scans 2,000 rounds for exact pattern replays.
-  2. NEURAL PHYSICS: Uses Momentum Mass (Velocity*Accel) as a neural input.
-  3. QUANTUM CHAOS: Z-Score Reversion protected by Variance Analysis.
-  4. SNIPER STAKING: Level 1 (Standard), Level 2 (Recovery), Level 3 (Sniper).
-=============================================================================
-"""
+
 
 import math
 import statistics
