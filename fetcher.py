@@ -1,305 +1,258 @@
+"""
+TITAN V700 - SOVEREIGN FETCHER ENGINE (V2026.6 - OCTET-STREAM FIX)
+================================================================
+A highly robust, asynchronous data acquisition layer designed to 
+synchronize with the draw.ar-lottery01.com API.
+================================================================
+"""
+
 import aiohttp
 import asyncio
 import json
-import sqlite3
-import time
-import sys
-import os
 import logging
+import os
+import sys
+import time
+import sqlite3
 from collections import deque
 from datetime import datetime
+from typing import List, Dict, Optional, Any
 
-# --- LOGGING SETUP ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+# --- CUSTOM LOGGING CONFIGURATION ---
+LOG_FORMAT = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, stream=sys.stdout)
 logger = logging.getLogger("TITAN_FETCHER")
 
-# --- IMPORT ENGINE ---
+# --- CORE SYSTEM ENGINE IMPORT ---
 try:
     from prediction_engine import ultraAIPredict
-    logger.info("TITAN V700 ENGINE LINKED SUCCESSFULLY.")
-except ImportError:
-    logger.error("prediction_engine.py is missing! Predictions will fail.")
+    # Integrating helper functions if available in your prediction_engine
+    def get_outcome_from_number(n):
+        try:
+            val = int(float(n))
+            return "SMALL" if 0 <= val <= 4 else "BIG"
+        except: return None
+    logger.info("Logic Engine (TITAN V700) linked successfully.")
+except ImportError as e:
+    logger.critical(f"FATAL: Prediction engine missing! Details: {e}")
+    sys.exit(1)
 
-# --- CONFIGURATION ---
-# Replace with your actual working API URL
-API_URL = "https://harshpredictor.site/api/api.php"
+# --- API CONFIGURATION ---
+TARGET_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json",
-    "Connection": "keep-alive",
-    "Cache-Control": "no-cache"
+    "Accept": "application/json, text/plain, */*",
+    "Origin": "https://draw.ar-lottery01.com",
+    "Referer": "https://draw.ar-lottery01.com/",
+    "Connection": "keep-alive"
 }
 
-# --- RENDER PERSISTENCE PATHS ---
-# Ensures server and fetcher share the exact same JSON file on persistent storage
-if os.path.exists('/var/lib/data'):
-    BASE_DIR = '/var/lib/data'
-    logger.info("Using Render Persistent Disk: /var/lib/data")
-elif os.path.exists('/data'):
-    BASE_DIR = '/data'
-    logger.info("Using Render Persistent Disk: /data")
-else:
-    BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-    logger.info(f"Using Local Storage: {BASE_DIR}")
+# --- PERSISTENT STORAGE PATHS ---
+BASE_STORAGE_PATH = os.path.abspath(os.path.dirname(__file__))
+DB_FILE = os.path.join(BASE_STORAGE_PATH, 'ar_lottery_history.db')
+DASHBOARD_PATH = os.path.join(BASE_STORAGE_PATH, 'dashboard_data.json')
 
-DASHBOARD_FILE = os.path.join(BASE_DIR, 'dashboard_data.json')
-LOCAL_DB_FILE = os.path.join(BASE_DIR, 'history_backup.json')
+# --- OPERATIONAL PARAMETERS ---
+HISTORY_RETENTION_LIMIT = 2000
+MIN_BRAIN_CAPACITY = 10   
+LIVE_POLL_INTERVAL = 2.0  
 
-# --- SETTINGS ---
-HISTORY_LIMIT = 2000       
-INITIAL_FETCH_SIZE = 1000  
-LIVE_FETCH_SIZE = 10        
-RECONNECT_DELAY = 5        
+# --- SHARED GLOBAL STATE ---
+class FetcherState:
+    def __init__(self):
+        self.bankroll = 10000.0
+        self.ram_history = deque(maxlen=HISTORY_RETENTION_LIMIT)
+        self.ui_history = deque(maxlen=50)
+        self.wins = 0
+        self.losses = 0
+        self.last_processed_issue = None
+        self.active_prediction = {
+            "issue": None, "label": "WAITING", "stake": 0, "conf": 0,
+            "level": "---", "reason": "Initializing system...", "strategy": "BOOTING"
+        }
+        self.last_win_status = "NONE"
 
-# --- MEMORY STORAGE ---
-RAM_HISTORY = deque(maxlen=HISTORY_LIMIT)
-UI_HISTORY = deque(maxlen=50)
-
-# --- GLOBAL STATE ---
-currentbankroll = 10000.0 
-last_prediction = {
-    "issue": None, 
-    "label": "WAITING", 
-    "stake": 0, 
-    "conf": 0, 
-    "level": "---", 
-    "reason": "System Initializing...", 
-    "strategy": "BOOTING"
-}
-last_win_status = "NONE"
-session_wins = 0
-session_losses = 0
+state = FetcherState()
 
 # =============================================================================
-# UTILITY FUNCTIONS
+# DATABASE LAYER
 # =============================================================================
 
-def get_outcome_from_number(n):
-    """Determines BIG/SMALL based on standard rules (0-4 Small, 5-9 Big)"""
-    try:
-        val = int(float(n))
-        if 0 <= val <= 4: return "SMALL"
-        if 5 <= val <= 9: return "BIG"
-    except (ValueError, TypeError): 
-        pass
-    return None
+def ensure_db_setup():
+    """Initializes SQLite to ensure data persists across script restarts."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute('''CREATE TABLE IF NOT EXISTS results 
+                    (issue TEXT PRIMARY KEY, code INTEGER, fetch_time TEXT)''')
+    conn.commit()
+    conn.close()
 
-def save_history_to_disk():
-    """Backup RAM_HISTORY to disk to prevent data loss on restarts."""
+async def save_to_db(issue: str, code: int):
+    """Saves a new record to the local SQLite database."""
     try:
-        with open(LOCAL_DB_FILE, "w") as f:
-            json.dump(list(RAM_HISTORY), f)
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("INSERT OR IGNORE INTO results (issue, code, fetch_time) VALUES (?, ?, ?)", 
+                       (str(issue), int(code), str(datetime.now())))
+        conn.commit()
+        conn.close()
     except Exception as e:
-        logger.error(f"Failed to backup history: {e}")
+        logger.error(f"DB Save Error: {e}")
 
-def load_history_from_disk():
-    """Load previous data on startup if API fails to provide full history."""
-    if os.path.exists(LOCAL_DB_FILE):
-        try:
-            with open(LOCAL_DB_FILE, "r") as f:
-                data = json.load(f)
-                for item in data:
-                    RAM_HISTORY.append(item)
-            logger.info(f"Restored {len(RAM_HISTORY)} records from disk.")
-        except Exception as e:
-            logger.error(f"Disk restore failed: {e}")
+async def load_db_to_ram():
+    """Loads historical data from DB into RAM for the AI engine."""
+    state.ram_history.clear()
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT issue, code FROM results ORDER BY issue DESC LIMIT {HISTORY_RETENTION_LIMIT}")
+        rows = cursor.fetchall()
+        conn.close()
+        for r in reversed(rows):
+            state.ram_history.append({'issue': str(r[0]), 'actual_number': int(r[1])})
+        return len(state.ram_history)
+    except Exception as e:
+        logger.error(f"DB Load Error: {e}")
+        return 0
 
-def update_dashboard(status_text="IDLE", timer_val=0):
-    """Writes system state to JSON for the Web UI to read."""
-    total = session_wins + session_losses
-    acc = f"{(session_wins/total)*100:.1f}%" if total > 0 else "0.0%"
+# =============================================================================
+# UI & ENGINE SYNC
+# =============================================================================
+
+async def sync_dashboard(status: str, timer: int):
+    """Updates the JSON bridge file for server.py."""
+    total = state.wins + state.losses
+    acc = f"{(state.wins / total) * 100:.1f}%" if total > 0 else "0.0%"
     
-    data = {
-        "period": last_prediction['issue'] if last_prediction['issue'] else "---",
-        "prediction": last_prediction['label'],
-        "confidence": f"{last_prediction.get('conf', 0)*100:.1f}%",
-        "stake": last_prediction['stake'],
-        "level": last_prediction.get('level', '---'),
-        "strategy": last_prediction.get('strategy', 'STANDARD'),
-        "reason": last_prediction.get('reason', 'Syncing...'),
-        "bankroll": currentbankroll,
-        "lastresult_status": last_win_status,
-        "status_text": status_text,
-        "timer": timer_val,
-        "data_size": len(RAM_HISTORY),
-        "stats": {"wins": session_wins, "losses": session_losses, "accuracy": acc},
-        "history": list(UI_HISTORY),
+    payload = {
+        "period": state.active_prediction['issue'] or "---",
+        "prediction": state.active_prediction['label'],
+        "confidence": f"{state.active_prediction.get('conf', 0)*100:.1f}%",
+        "stake": state.active_prediction['stake'],
+        "level": state.active_prediction.get('level', '---'),
+        "bankroll": state.bankroll,
+        "lastresult_status": state.last_win_status,
+        "status_text": status,
+        "timer": timer,
+        "data_size": len(state.ram_history),
+        "stats": {"wins": state.wins, "losses": state.losses, "accuracy": acc},
+        "history": list(state.ui_history),
         "timestamp": time.time()
     }
-    
-    try:
-        # Atomic write to prevent file corruption
-        temp_file = DASHBOARD_FILE + ".tmp"
-        with open(temp_file, "w") as f: 
-            json.dump(data, f)
-        os.replace(temp_file, DASHBOARD_FILE)
-    except Exception as e: 
-        logger.error(f"Dashboard Update Failed: {e}")
 
-# =============================================================================
-# DATA ACQUISITION
-# =============================================================================
-
-async def fetch_api_data(session, limit=10):
-    """Robust fetcher that handles common lottery JSON structures."""
     try:
-        params = {'pageSize': limit, 'page': 1}
-        async with session.get(API_URL, headers=HEADERS, params=params, timeout=15) as response:
-            if response.status == 200:
-                # Use content_type=None to handle misconfigured servers sending text/html
-                d = await response.json(content_type=None)
-                
-                # Dynamic extraction: handle different JSON formats
-                data_list = []
-                if 'data' in d and 'list' in d['data']:
-                    data_list = d['data']['list']
-                elif 'list' in d:
-                    data_list = d['list']
-                elif isinstance(d, list):
-                    data_list = d
-                    
-                return data_list
-            else:
-                logger.warning(f"API returned status {response.status}")
-    except asyncio.TimeoutError:
-        logger.error("API Connection Timeout")
+        temp_path = DASHBOARD_PATH + ".tmp"
+        with open(temp_path, "w") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(temp_path, DASHBOARD_PATH)
     except Exception as e:
-        logger.error(f"Fetch Connection failed: {e}")
-    return None
+        logger.error(f"Dashboard Sync Error: {e}")
 
 # =============================================================================
-# CORE PROCESSING LOOP
+# NETWORK LAYER
 # =============================================================================
 
-async def main_loop():
-    global currentbankroll, last_prediction, last_win_status, session_wins, session_losses
-    logger.info("TITAN V700 FETCHER INITIALIZED.")
+async def execute_api_fetch(session: aiohttp.ClientSession, limit: int) -> List[Dict]:
+    """
+    Fetches data using GET.
+    CRITICAL FIX: content_type=None allows decoding 'application/octet-stream'.
+    """
+    params = {
+        "pageSize": limit,
+        "pageNo": 1,
+        "typeId": 1,
+        "language": 0,
+        "timestamp": int(time.time() * 1000)
+    }
+
+    try:
+        async with session.get(TARGET_URL, headers=HEADERS, params=params, timeout=10) as response:
+            if response.status == 200:
+                # content_type=None bypasses the mimetype validation error
+                json_data = await response.json(content_type=None)
+                return json_data.get('data', {}).get('list', []) or json_data.get('list', [])
+            else:
+                logger.warning(f"API Rejection: Status {response.status}")
+    except Exception as e:
+        logger.error(f"Network Error: {e}")
     
-    last_processed_issue = None
-    load_history_from_disk()
+    return []
+
+# =============================================================================
+# MAIN OPERATIONAL LOOP
+# =============================================================================
+
+async def run_fetcher_engine():
+    """Main loop for data synchronization and AI prediction."""
+    ensure_db_setup()
+    await load_db_to_ram()
+    
+    logger.info(f"--- TITAN V700 STARTED | {len(state.ram_history)} RECORDS LOADED ---")
     
     async with aiohttp.ClientSession() as session:
-        # Initial Bootstrapping
-        update_dashboard("BOOTING...", 0)
-        startup_data = await fetch_api_data(session, INITIAL_FETCH_SIZE)
-        
-        if startup_data:
-            for item in reversed(startup_data):
-                try:
-                    issue = str(item.get('issueNumber') or item.get('issue'))
+        while True:
+            raw_list = await execute_api_fetch(session, 10)
+            
+            if raw_list:
+                # 1. Update Database and RAM with any new rounds in the batch
+                for item in reversed(raw_list):
+                    iss = str(item.get('issueNumber') or item.get('issue'))
                     num = int(item.get('number') or item.get('result'))
                     
-                    if not RAM_HISTORY or RAM_HISTORY[-1]['issue'] != issue:
-                        RAM_HISTORY.append({'issue': issue, 'actual_number': num})
-                except: continue
-            
-            logger.info(f"History Sync Complete. Memory: {len(RAM_HISTORY)} items.")
-            if len(RAM_HISTORY) > 0:
-                last_processed_issue = RAM_HISTORY[-1]['issue']
-        
-        # Real-time Monitoring Loop
-        while True:
-            try:
-                raw_list = await fetch_api_data(session, LIVE_FETCH_SIZE)
+                    if not any(d['issue'] == iss for d in state.ram_history):
+                        await save_to_db(iss, num)
+                        state.ram_history.append({'issue': iss, 'actual_number': num})
+                        logger.info(f"[DATABASE] Stored Round {iss}")
+
+                # 2. Process Latest Round
+                latest = raw_list[0]
+                curr_issue = str(latest.get('issueNumber') or latest.get('issue'))
+                curr_num = int(latest.get('number') or latest.get('result'))
                 
-                if raw_list:
-                    latest = raw_list[0]
-                    curr_issue = str(latest.get('issueNumber') or latest.get('issue'))
-                    curr_num = int(latest.get('number') or latest.get('result'))
+                seconds_remaining = 60 - datetime.now().second
+                await sync_dashboard("LIVE", seconds_remaining)
+                
+                if curr_issue != state.last_processed_issue:
+                    logger.info(f"[NEW ROUND] {curr_issue} | Result: {curr_num}")
                     
-                    now = datetime.now()
-                    seconds_left = 60 - now.second
-                    update_dashboard("LIVE SYNC", seconds_left)
-                    
-                    if curr_issue != last_processed_issue:
-                        logger.info(f"New Period Detected: {curr_issue}")
+                    # 3. Verify Previous Prediction Result
+                    if state.active_prediction['issue'] == curr_issue:
+                        real_outcome = get_outcome_from_number(curr_num)
+                        pred_label = state.active_prediction['label']
                         
-                        # Store to memory
-                        if not RAM_HISTORY or RAM_HISTORY[-1]['issue'] != curr_issue:
-                            RAM_HISTORY.append({'issue': curr_issue, 'actual_number': curr_num})
-                            save_history_to_disk()
-
-                        # --- PHASE A: WIN/LOSS VERIFICATION ---
-                        if last_prediction['issue'] == curr_issue:
-                            real_outcome = get_outcome_from_number(curr_num)
-                            predicted = last_prediction['label']
+                        if pred_label not in ["WAITING", "SKIP"]:
+                            win = (pred_label == real_outcome)
+                            state.last_win_status = "WIN" if win else "LOSS"
+                            if win: state.wins += 1
+                            else: state.losses += 1
                             
-                            if predicted not in ["SKIP", "WAITING"]:
-                                is_win = (predicted == real_outcome)
-                                
-                                # Accuracy update
-                                if is_win:
-                                    session_wins += 1
-                                    last_win_status = "WIN"
-                                    logger.info(f"RESULT: WIN | Period: {curr_issue}")
-                                else:
-                                    session_losses += 1
-                                    last_win_status = "LOSS"
-                                    logger.info(f"RESULT: LOSS | Period: {curr_issue}")
-                                
-                                # Add to UI History
-                                UI_HISTORY.appendleft({
-                                    "period": curr_issue, 
-                                    "pred": predicted, 
-                                    "result": last_win_status
-                                })
+                            state.ui_history.appendleft({
+                                "period": curr_issue, "pred": pred_label, "result": state.last_win_status
+                            })
 
-                        # --- PHASE B: ENGINE PREDICTION ---
+                    # 4. Generate Next Prediction
+                    if len(state.ram_history) >= MIN_BRAIN_CAPACITY:
                         next_issue = str(int(curr_issue) + 1)
-                        
-                        # Wait for a few seconds for data stability
-                        for i in range(3, 0, -1):
-                            update_dashboard(f"THINKING... {i}", seconds_left)
-                            await asyncio.sleep(1)
-                            seconds_left = 60 - datetime.now().second
-
-                        if len(RAM_HISTORY) >= 15:
-                            try:
-                                # Trigger the Sovereign AI
-                                ai_res = ultraAIPredict(
-                                    list(RAM_HISTORY), 
-                                    currentbankroll, 
-                                    get_outcome_from_number(curr_num)
-                                )
-                                
-                                last_prediction = {
-                                    "issue": next_issue, 
-                                    "label": ai_res['finalDecision'], 
-                                    "stake": ai_res['positionsize'],
-                                    "conf": ai_res['confidence'],
-                                    "level": ai_res['level'],
-                                    "strategy": "SOVEREIGN",
-                                    "reason": ai_res.get('reason', 'Processing...')
-                                }
-                                logger.info(f"NEXT: {next_issue} | PRED: {last_prediction['label']}")
-                            except Exception as e:
-                                logger.error(f"Engine Crash: {e}")
-                                last_prediction['label'] = "SKIP"
-                                last_prediction['reason'] = "Internal Engine Error"
-                        
-                        last_processed_issue = curr_issue
-
-                else:
-                    logger.warning("No data received from API. Retrying...")
-                    update_dashboard("CONNECTION LOST", 0)
-                    await asyncio.sleep(RECONNECT_DELAY)
-
-                await asyncio.sleep(2.0) # Check every 2 seconds
-
-            except Exception as e:
-                logger.error(f"Global Loop Error: {e}")
-                await asyncio.sleep(RECONNECT_DELAY)
+                        try:
+                            ai_output = ultraAIPredict(list(state.ram_history), state.bankroll, get_outcome_from_number(curr_num))
+                            state.active_prediction = {
+                                "issue": next_issue,
+                                "label": ai_output['finalDecision'],
+                                "stake": ai_output['positionsize'],
+                                "conf": ai_output['confidence'],
+                                "level": ai_output['level'],
+                                "reason": ai_output.get('reason', 'Analyzing patterns...')
+                            }
+                            logger.info(f"[AI] Target: {next_issue} | Decision: {ai_output['finalDecision']}")
+                        except Exception as e:
+                            logger.error(f"Engine Error: {e}")
+                    
+                    state.last_processed_issue = curr_issue
+            
+            await asyncio.sleep(LIVE_POLL_INTERVAL)
 
 if __name__ == '__main__':
-    # Optimization for Windows local testing
-    if sys.platform == 'win32': 
+    if sys.platform == 'win32':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    
     try:
-        asyncio.run(main_loop())
+        asyncio.run(run_fetcher_engine())
     except KeyboardInterrupt:
-        logger.info("System shutting down gracefully.")
+        logger.info("Shutdown requested.")
