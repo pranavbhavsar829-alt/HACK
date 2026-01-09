@@ -8,14 +8,16 @@
     | |   _| |_   | |  | |__| || |\  |
     |_|  |_____|  |_|   \____/ |_| \_|
                                       
-  TITAN V305 - PATIENT SNIPER EDITION
+  TITAN V307 - CALCULATED SNIPER EDITION
   ==============================================================================
-  CORE LOGIC:
-  1. ADAPTIVE SCORING: Tracks the best engine (Visual vs Math).
-  2. PATIENT SNIPER: After a loss, it WAITS for a clear trend before firing 
-     the recovery shot. It does NOT bet blindly on the next turn.
-  3. VOLATILITY FILTER: Skips betting if the market is purely random noise.
-  4. DEEP MEMORY: Scans 500 records for history matches.
+  THE STRATEGY:
+  1. WINNING PHASE (Streak 0): Active Betting. Bets on Level 1/2/3.
+     - Keeps the game moving. Low skips.
+  
+  2. RECOVERY PHASE (Streak > 0): Patient Betting.
+     - SKIPS all weak Level 1 signals.
+     - WAITS for Level 2 or Level 3 (Strong Trend) to recover.
+     - Prevents "Panic Betting" on bad trends.
 ================================================================================
 """
 
@@ -33,7 +35,7 @@ class GameConstants:
     BIG = "BIG"
     SMALL = "SMALL" 
     SKIP = "SKIP"
-    MIN_HISTORY_FOR_PREDICTION = 30 
+    MIN_HISTORY_FOR_PREDICTION = 25 
     DEBUG_MODE = True
 
 # ==============================================================================
@@ -49,11 +51,11 @@ class RiskConfig:
     MAX_BET_AMOUNT = 50000
     
     # --------------------------------------------------------------------------
-    # PATIENT SNIPER STAKING
+    # CALCULATED SNIPER STAKING
     # --------------------------------------------------------------------------
-    # Logic: Bet 1 (1.0x) -> Wait for perfect setup -> Bet 2 (4.5x)
     TIER_1_MULT = 1.0   # Standard Bet
-    TIER_3_MULT = 4.5   # Sniper Shot (Immediate Recovery)
+    TIER_2_MULT = 2.0   # Recovery (Not used blindly anymore)
+    TIER_3_MULT = 5.0   # Sniper Shot (Used for Level 2/3 Recovery)
     
     STOP_LOSS_STREAK = 5 
 
@@ -110,17 +112,14 @@ def engine_quantum_adaptive(history: List[Dict]) -> Optional[Dict]:
         if std == 0: return None
         z_score = (numbers[-1] - mean) / std
         
-        # FILTER: If Z-Score is very low (< 0.5), market is flat/noisy.
-        # We return None to encourage skipping.
-        if abs(z_score) < 0.5: return None
+        # ACTIVE FILTER: > 0.25 (Catches mild trends)
+        if abs(z_score) < 0.25: return None
 
-        # DRAGON TRAP: If trend is too extreme (>2.8), don't bet against it.
-        if abs(z_score) > 2.8: return None 
-        
+        if abs(z_score) > 3.0: return None 
         strength = min(abs(z_score) / 2.5, 1.0) 
         
-        if z_score > 1.6: return {'prediction': GameConstants.SMALL, 'weight': strength, 'source': 'Quantum'}
-        elif z_score < -1.6: return {'prediction': GameConstants.BIG, 'weight': strength, 'source': 'Quantum'}
+        if z_score > 1.2: return {'prediction': GameConstants.SMALL, 'weight': strength, 'source': 'Quantum'}
+        elif z_score < -1.2: return {'prediction': GameConstants.BIG, 'weight': strength, 'source': 'Quantum'}
         return None
     except: return None
 
@@ -148,8 +147,7 @@ def engine_deep_memory_v4(history: List[Dict]) -> Optional[Dict]:
             total = count_b + count_s
             if total >= 3:
                 imbalance = abs((count_b/total) - (count_s/total))
-                # STRICTER THRESHOLD (0.4) to avoid blind betting
-                if imbalance > highest_confidence and imbalance > 0.40: 
+                if imbalance > highest_confidence and imbalance > 0.30: 
                     highest_confidence = imbalance
                     pred = GameConstants.BIG if count_b > count_s else GameConstants.SMALL
                     best_signal = {'prediction': pred, 'weight': imbalance, 'source': f'DeepMem({depth})'}
@@ -165,7 +163,7 @@ def engine_chart_patterns(history: List[Dict]) -> Optional[Dict]:
         if not s: return None
         last = s[-1]; opp = 'S' if last == 'B' else 'B'
         
-        if len(s)>=5 and s[-5:]==last*5: return {'prediction': last, 'weight': 0.95, 'source': 'Chart:Dragon'}
+        if len(s)>=4 and s[-4:]==last*4: return {'prediction': last, 'weight': 0.95, 'source': 'Chart:Dragon'}
         if len(s)>=4 and s[-4:]==(last+opp+last+opp)[-4:]: return {'prediction': opp, 'weight': 0.85, 'source': 'Chart:1A1B'}
         if len(s)>=3 and s[-3:]==opp+opp+last: return {'prediction': last, 'weight': 0.80, 'source': 'Chart:2A2B_Finish'}
         if len(s)>=5 and s[-5:]==(last+last+opp+last+last): return {'prediction': opp, 'weight': 0.85, 'source': 'Chart:2A1B'}
@@ -183,8 +181,8 @@ def engine_neural_perceptron(history: List[Dict]) -> Optional[Dict]:
         mom = (fast - slow) / 10.0
         z = (input_rsi * -1.5) + (mom * 1.2)
         prob = sigmoid(z) 
-        if prob > 0.65: return {'prediction': GameConstants.BIG, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
-        elif prob < 0.35: return {'prediction': GameConstants.SMALL, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
+        if prob > 0.58: return {'prediction': GameConstants.BIG, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
+        elif prob < 0.42: return {'prediction': GameConstants.SMALL, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
         return None
     except: return None
 
@@ -202,7 +200,7 @@ state_manager = GlobalStateManager()
 
 def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_result: Optional[str] = None) -> Dict:
     """
-    TITAN V305 - PATIENT SNIPER LOGIC
+    TITAN V307 - CALCULATED SNIPER LOGIC
     """
     # 1. ADAPTIVE SCORING
     if len(history) > 1:
@@ -256,81 +254,75 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
     # 5. DECISION LOGIC
     final_decision = GameConstants.SKIP
     level_name = "SKIP"
-    reason_log = "Analyzing Market..."
+    reason_log = "Analyzing..."
     
     sorted_engines = sorted(state_manager.engine_scores.items(), key=lambda x: x[1], reverse=True)
     top_engine_name = sorted_engines[0][0]
-    top_engine_score = sorted_engines[0][1]
     
     votes = [s['prediction'] for s in signals]
     vote_counts = Counter(votes)
     most_common, count = vote_counts.most_common(1)[0] if vote_counts else (None, 0)
     
-    # --- LEVEL DEFINITIONS ---
-    
-    # Level 3: Perfect Consensus
-    if count >= 3:
+    # --- LEVEL ASSIGNMENT ---
+    is_level_3 = (count >= 3)
+    is_level_2 = (count == 2)
+    is_level_1 = (count < 2 and any(current_preds.values()))
+
+    if is_level_3:
         final_decision = most_common
         level_name = "🔥 LEVEL 3 (PERFECT)"
         reason_log = f"Full Consensus ({count} Engines)"
-        
-    # Level 2: Strong Agreement
-    elif count == 2:
+    elif is_level_2:
         final_decision = most_common
         level_name = "⚡ LEVEL 2 (STRONG)"
         reason_log = f"2 Engines Agree"
-        
-    # Level 1: Solo Strategy (Adaptive)
-    else:
-        top_pred = current_preds.get(top_engine_name)
-        if top_pred:
-            final_decision = top_pred
+    elif is_level_1:
+        # Pick the best engine
+        if current_preds.get(top_engine_name):
+            final_decision = current_preds[top_engine_name]
             level_name = f"🟢 LEVEL 1 ({top_engine_name.upper()})"
             reason_log = f"Trusting {top_engine_name}"
         else:
-            # Fallback to 2nd best
-            second_engine = sorted_engines[1][0]
-            second_pred = current_preds.get(second_engine)
-            if second_pred:
-                final_decision = second_pred
-                level_name = f"🟢 LEVEL 1 ({second_engine.upper()})"
-                reason_log = f"Trusting {second_engine}"
+            sec = sorted_engines[1][0]
+            if current_preds.get(sec):
+                final_decision = current_preds[sec]
+                level_name = f"🟢 LEVEL 1 ({sec.upper()})"
+                reason_log = f"Trusting {sec}"
 
-    # 6. PATIENT SNIPER STAKING LOGIC
+    # 6. CALCULATED STAKING LOGIC
     base_bet = max(current_bankroll * RiskConfig.BASE_RISK_PERCENT, RiskConfig.MIN_BET_AMOUNT)
     stake = 0
     
     if final_decision != GameConstants.SKIP:
-        # Standard Multipliers
-        if "LEVEL 3" in level_name: stake = base_bet * 2.5
-        elif "LEVEL 2" in level_name: stake = base_bet * 1.5
-        elif "LEVEL 1" in level_name: stake = base_bet * 1.0 
+        
+        # --- PHASE 1: WINNING (Streak 0) ---
+        if streak == 0:
+            # Active Mode: Bet on everything to keep game moving
+            if "LEVEL 3" in level_name: stake = base_bet * 2.5
+            elif "LEVEL 2" in level_name: stake = base_bet * 1.5
+            elif "LEVEL 1" in level_name: stake = base_bet * 1.0 
+        
+        # --- PHASE 2: RECOVERING (Streak > 0) ---
+        else:
+            # Calculated Sniper Mode: WAIT for the setup.
             
-        # --- PATIENT RECOVERY LOGIC ---
-        if streak >= 1:
-            # WE ARE IN RECOVERY MODE.
-            # CRITICAL: Do not bet blindly on weak signals.
+            # Scenario A: Weak Signal (Level 1)
+            if "LEVEL 1" in level_name:
+                # SKIP IT! Don't panic bet. Wait for better trend.
+                return {
+                    'finalDecision': GameConstants.SKIP, 
+                    'confidence': 0, 
+                    'level': 'CALCULATED_WAIT', 
+                    'reason': 'Skipping Weak Signal during Recovery...', 
+                    'topsignals': [], 'positionsize': 0
+                }
             
-            # If the signal is STRONG (Level 2 or 3), Fire the Sniper!
-            if "LEVEL 2" in level_name or "LEVEL 3" in level_name:
-                stake = stake * RiskConfig.TIER_3_MULT # (x4.5)
-                level_name = f"🎯 SNIPER SHOT ({level_name})"
+            # Scenario B: Strong Signal (Level 2 or 3)
+            # FIRE THE SNIPER!
+            else:
+                stake = base_bet * RiskConfig.TIER_3_MULT # (x5.0 Recovery)
+                level_name = f"🎯 SNIPER ({level_name})"
                 reason_log = f"Clear Trend Found -> RECOVERING"
-            
-            # If the signal is Level 1 (Weak), CHECK ENGINE SCORE
-            elif "LEVEL 1" in level_name:
-                if top_engine_score >= 18: # Only trust very hot engines
-                    stake = stake * RiskConfig.TIER_3_MULT
-                    level_name = f"🎯 SNIPER (Hot Hand)"
-                else:
-                    # Signal is too weak for a recovery bet. SKIP and WAIT.
-                    return {
-                        'finalDecision': GameConstants.SKIP, 
-                        'confidence': 0, 
-                        'level': 'PATIENT_WAIT', 
-                        'reason': 'Waiting for better signal to recover...', 
-                        'topsignals': [], 'positionsize': 0
-                    }
 
     # Safety Cap
     if stake > current_bankroll * 0.4: stake = current_bankroll * 0.4
@@ -345,4 +337,4 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
     }
 
 if __name__ == "__main__":
-    print("TITAN V305 PATIENT SNIPER LOADED.")
+    print("TITAN V307 CALCULATED SNIPER LOADED.")
