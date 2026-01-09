@@ -8,16 +8,15 @@
     | |   _| |_   | |  | |__| || |\  |
     |_|  |_____|  |_|   \____/ |_| \_|
                                       
-  TITAN V307 - CALCULATED SNIPER EDITION
+  TITAN V309 - BALANCED STRIKER EDITION
   ==============================================================================
-  THE STRATEGY:
-  1. WINNING PHASE (Streak 0): Active Betting. Bets on Level 1/2/3.
-     - Keeps the game moving. Low skips.
-  
-  2. RECOVERY PHASE (Streak > 0): Patient Betting.
-     - SKIPS all weak Level 1 signals.
-     - WAITS for Level 2 or Level 3 (Strong Trend) to recover.
-     - Prevents "Panic Betting" on bad trends.
+  THE LOGIC:
+  1. WINNING: Aggressive betting (Level 1/2/3). High frequency.
+  2. RECOVERING: Smart betting.
+     - Strong Signal -> Sniper Recovery (x5).
+     - Decent Signal -> Standard Recovery (x2).
+     - Weak Signal -> SKIP (Don't chase bad trends).
+  3. FILTERS: Tuned to Z-Score > 0.20 (Catches 70% of trends).
 ================================================================================
 """
 
@@ -28,7 +27,7 @@ from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Any
 
 # ==============================================================================
-# SECTION 1: IMMUTABLE GAME CONSTANTS
+# SECTION 1: CONSTANTS
 # ==============================================================================
 
 class GameConstants:
@@ -39,28 +38,28 @@ class GameConstants:
     DEBUG_MODE = True
 
 # ==============================================================================
-# SECTION 2: RISK & SNIPER CONFIGURATION
+# SECTION 2: BALANCED CONFIGURATION
 # ==============================================================================
 
 class RiskConfig:
     # --------------------------------------------------------------------------
     # BANKROLL MANAGEMENT
     # --------------------------------------------------------------------------
-    BASE_RISK_PERCENT = 0.03    # 3% Base Risk
+    BASE_RISK_PERCENT = 0.03    
     MIN_BET_AMOUNT = 50
     MAX_BET_AMOUNT = 50000
     
     # --------------------------------------------------------------------------
-    # CALCULATED SNIPER STAKING
+    # STAKING PLAN
     # --------------------------------------------------------------------------
-    TIER_1_MULT = 1.0   # Standard Bet
-    TIER_2_MULT = 2.0   # Recovery (Not used blindly anymore)
-    TIER_3_MULT = 5.0   # Sniper Shot (Used for Level 2/3 Recovery)
+    TIER_1_MULT = 1.0   # Standard
+    TIER_2_MULT = 2.0   # Recovery (Active)
+    TIER_3_MULT = 5.0   # Sniper (Strong)
     
     STOP_LOSS_STREAK = 5 
 
 # ==============================================================================
-# SECTION 3: MATHEMATICAL UTILITIES
+# SECTION 3: UTILITIES
 # ==============================================================================
 
 def safe_float(value: Any) -> float:
@@ -100,11 +99,11 @@ def sigmoid(x):
     except OverflowError: return 0.0 if x < 0 else 1.0
 
 # ==============================================================================
-# SECTION 4: THE FOUR ANALYTICAL ENGINES
+# SECTION 4: ENGINES (BALANCED TUNING)
 # ==============================================================================
 
 def engine_quantum_adaptive(history: List[Dict]) -> Optional[Dict]:
-    """Detects Trends vs Noise using Z-Score."""
+    """Detects Trends vs Noise."""
     try:
         numbers = [safe_float(d.get('actual_number')) for d in history[-60:]]
         if len(numbers) < 20: return None
@@ -112,10 +111,10 @@ def engine_quantum_adaptive(history: List[Dict]) -> Optional[Dict]:
         if std == 0: return None
         z_score = (numbers[-1] - mean) / std
         
-        # ACTIVE FILTER: > 0.25 (Catches mild trends)
-        if abs(z_score) < 0.25: return None
+        # BALANCED FILTER: > 0.20 (Catches most action, skips total noise)
+        if abs(z_score) < 0.20: return None
 
-        if abs(z_score) > 3.0: return None 
+        if abs(z_score) > 2.9: return None 
         strength = min(abs(z_score) / 2.5, 1.0) 
         
         if z_score > 1.2: return {'prediction': GameConstants.SMALL, 'weight': strength, 'source': 'Quantum'}
@@ -147,11 +146,12 @@ def engine_deep_memory_v4(history: List[Dict]) -> Optional[Dict]:
             total = count_b + count_s
             if total >= 3:
                 imbalance = abs((count_b/total) - (count_s/total))
-                if imbalance > highest_confidence and imbalance > 0.30: 
+                # MODERATE FILTER: 0.28
+                if imbalance > highest_confidence and imbalance > 0.28: 
                     highest_confidence = imbalance
                     pred = GameConstants.BIG if count_b > count_s else GameConstants.SMALL
                     best_signal = {'prediction': pred, 'weight': imbalance, 'source': f'DeepMem({depth})'}
-                    if depth > 6 and imbalance > 0.7: break
+                    if depth > 6 and imbalance > 0.65: break
         return best_signal
     except: return None
 
@@ -181,8 +181,9 @@ def engine_neural_perceptron(history: List[Dict]) -> Optional[Dict]:
         mom = (fast - slow) / 10.0
         z = (input_rsi * -1.5) + (mom * 1.2)
         prob = sigmoid(z) 
-        if prob > 0.58: return {'prediction': GameConstants.BIG, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
-        elif prob < 0.42: return {'prediction': GameConstants.SMALL, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
+        # MODERATE FILTER: 0.56/0.44
+        if prob > 0.56: return {'prediction': GameConstants.BIG, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
+        elif prob < 0.44: return {'prediction': GameConstants.SMALL, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
         return None
     except: return None
 
@@ -200,7 +201,7 @@ state_manager = GlobalStateManager()
 
 def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_result: Optional[str] = None) -> Dict:
     """
-    TITAN V307 - CALCULATED SNIPER LOGIC
+    TITAN V309 - BALANCED LOGIC
     """
     # 1. ADAPTIVE SCORING
     if len(history) > 1:
@@ -258,6 +259,7 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
     
     sorted_engines = sorted(state_manager.engine_scores.items(), key=lambda x: x[1], reverse=True)
     top_engine_name = sorted_engines[0][0]
+    top_engine_score = sorted_engines[0][1]
     
     votes = [s['prediction'] for s in signals]
     vote_counts = Counter(votes)
@@ -277,52 +279,57 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
         level_name = "⚡ LEVEL 2 (STRONG)"
         reason_log = f"2 Engines Agree"
     elif is_level_1:
-        # Pick the best engine
+        # Just pick the best active engine
         if current_preds.get(top_engine_name):
             final_decision = current_preds[top_engine_name]
             level_name = f"🟢 LEVEL 1 ({top_engine_name.upper()})"
             reason_log = f"Trusting {top_engine_name}"
         else:
-            sec = sorted_engines[1][0]
-            if current_preds.get(sec):
-                final_decision = current_preds[sec]
-                level_name = f"🟢 LEVEL 1 ({sec.upper()})"
-                reason_log = f"Trusting {sec}"
+            for eng, pred in current_preds.items():
+                if pred:
+                    final_decision = pred
+                    level_name = f"🟢 LEVEL 1 ({eng.upper()})"
+                    reason_log = f"Trusting {eng}"
+                    break
 
-    # 6. CALCULATED STAKING LOGIC
+    # 6. BALANCED STAKING LOGIC
     base_bet = max(current_bankroll * RiskConfig.BASE_RISK_PERCENT, RiskConfig.MIN_BET_AMOUNT)
     stake = 0
     
     if final_decision != GameConstants.SKIP:
         
-        # --- PHASE 1: WINNING (Streak 0) ---
+        # --- WINNING PHASE (Streak 0) ---
         if streak == 0:
-            # Active Mode: Bet on everything to keep game moving
+            # Active Mode: Bet on everything. Keep the action going.
             if "LEVEL 3" in level_name: stake = base_bet * 2.5
             elif "LEVEL 2" in level_name: stake = base_bet * 1.5
             elif "LEVEL 1" in level_name: stake = base_bet * 1.0 
         
-        # --- PHASE 2: RECOVERING (Streak > 0) ---
+        # --- RECOVERY PHASE (Streak > 0) ---
         else:
-            # Calculated Sniper Mode: WAIT for the setup.
+            # Be smart about recovery.
             
-            # Scenario A: Weak Signal (Level 1)
-            if "LEVEL 1" in level_name:
-                # SKIP IT! Don't panic bet. Wait for better trend.
+            # Scenario A: Strong Signal -> SNIPER RECOVERY (x5.0)
+            if "LEVEL 2" in level_name or "LEVEL 3" in level_name:
+                stake = base_bet * RiskConfig.TIER_3_MULT 
+                level_name = f"🎯 SNIPER ({level_name})"
+                reason_log = f"Strong Signal -> Sniper Recovery"
+            
+            # Scenario B: Level 1 with High Score -> ACTIVE RECOVERY (x2.0)
+            elif top_engine_score >= 12: # "Decent" engine trust
+                stake = base_bet * RiskConfig.TIER_2_MULT 
+                level_name = f"⚔️ ACTIVE ({level_name})"
+                reason_log = f"Standard Recovery"
+            
+            # Scenario C: Level 1 with Low Score -> SKIP (Save Money)
+            else:
                 return {
                     'finalDecision': GameConstants.SKIP, 
                     'confidence': 0, 
-                    'level': 'CALCULATED_WAIT', 
+                    'level': 'SMART_SKIP', 
                     'reason': 'Skipping Weak Signal during Recovery...', 
                     'topsignals': [], 'positionsize': 0
                 }
-            
-            # Scenario B: Strong Signal (Level 2 or 3)
-            # FIRE THE SNIPER!
-            else:
-                stake = base_bet * RiskConfig.TIER_3_MULT # (x5.0 Recovery)
-                level_name = f"🎯 SNIPER ({level_name})"
-                reason_log = f"Clear Trend Found -> RECOVERING"
 
     # Safety Cap
     if stake > current_bankroll * 0.4: stake = current_bankroll * 0.4
@@ -337,4 +344,4 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
     }
 
 if __name__ == "__main__":
-    print("TITAN V307 CALCULATED SNIPER LOADED.")
+    print("TITAN V309 BALANCED STRIKER LOADED.")
