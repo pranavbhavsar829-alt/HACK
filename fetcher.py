@@ -260,7 +260,7 @@ async def main_loop():
                     # =========================================================
                     # Only set new cooldown if we aren't already in one
                     if cooldown_counter == 0:
-                        if consecutive_wins >= 5:
+                        if consecutive_wins >= 10:
                             cooldown_counter = 6  # Pause for 6 periods
                             cooldown_reason = "PROFIT LOCK (5 Wins)"
                             consecutive_wins = 0  # Reset streak so we don't trigger again immediately
