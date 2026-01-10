@@ -114,7 +114,7 @@ def engine_quantum_adaptive(history: List[Dict]) -> Optional[Dict]:
         z_score = (numbers[-1] - mean) / std
         
         # TIGHTER FILTER: 0.25 (Ignores small noise)
-        if abs(z_score) < 0.18: return None
+        if abs(z_score) < 0.10: return None
         if abs(z_score) > 2.8: return None 
         strength = min(abs(z_score) / 2.5, 1.0) 
         
