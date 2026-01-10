@@ -1,23 +1,4 @@
-#!/usr/bin/env python3
-"""
-================================================================================
-  _______ _____ _______ _    _  _   _ 
- |__   __|_   _|__   __| |  | || \ | |
-    | |    | |    | |  | |  | ||  \| |
-    | |    | |    | |  | |  | || . ` |
-    | |   _| |_   | |  | |__| || |\  |
-    |_|  |_____|  |_|   \____/ |_| \_|
-                                      
-  TITAN V316 - MIRROR MASTER EDITION
-  ==============================================================================
-  UPDATES:
-  1. AUTO-MIRROR: Automatically generates the "Reverse" of every pattern.
-     (e.g., if you define "BSS", it automatically adds "SBB").
-  2. COVERAGE: Instantly doubles pattern recognition from 35 to 70+.
-  3. LOGIC: Maintains the "Longest Match" priority for accuracy.
-  4. SPEED: Kept actively tuned (10-25 round waits).
-================================================================================
-"""
+
 
 import math
 import statistics
@@ -37,28 +18,29 @@ class GameConstants:
     DEBUG_MODE = True
 
 # ==============================================================================
-# SECTION 2: RISK CONFIGURATION
+# SECTION 2: RISK CONFIGURATION (SAFE MODE)
 # ==============================================================================
 
 class RiskConfig:
     # --------------------------------------------------------------------------
-    # BANKROLL
+    # BANKROLL MANAGEMENT
     # --------------------------------------------------------------------------
     BASE_RISK_PERCENT = 0.03    
     MIN_BET_AMOUNT = 50
     MAX_BET_AMOUNT = 50000
     
     # --------------------------------------------------------------------------
-    # RECOVERY STAKING
+    # RECOVERY STAKING (OPTIMIZED)
     # --------------------------------------------------------------------------
+    # Capped at 3.0x to prevent catastrophic loss
     TIER_1_MULT = 1.0   
     TIER_2_MULT = 2.0   
-    TIER_3_MULT = 5.0   
+    TIER_3_MULT = 3.0   
     
     STOP_LOSS_STREAK = 5 
 
 # ==============================================================================
-# SECTION 3: UTILITIES
+# SECTION 3: UTILITIES & GUARDS
 # ==============================================================================
 
 def safe_float(value: Any) -> float:
@@ -82,23 +64,28 @@ def calculate_stddev(data: List[float]) -> float:
     variance = sum((x - mean) ** 2 for x in data) / (len(data) - 1)
     return math.sqrt(variance)
 
-def calculate_rsi(data: List[float], period: int = 14) -> float:
-    if len(data) < period + 1: return 50.0
-    deltas = [data[i] - data[i-1] for i in range(1, len(data))]
-    gains = [d if d > 0 else 0 for d in deltas]
-    losses = [-d if d < 0 else 0 for d in deltas]
-    avg_gain = calculate_mean(gains[-period:])
-    avg_loss = calculate_mean(losses[-period:])
-    if avg_loss == 0: return 100.0
-    rs = avg_gain / avg_loss
-    return 100.0 - (100.0 / (1.0 + rs))
-
-def sigmoid(x):
-    try: return 1 / (1 + math.exp(-x))
-    except OverflowError: return 0.0 if x < 0 else 1.0
+def is_market_choppy(history: List[Dict]) -> bool:
+    """
+    CHAOS GUARD: Returns True if the market is switching too fast (Ping-Pong).
+    """
+    try:
+        if len(history) < 15: return False
+        outcomes = [get_outcome_from_number(d.get('actual_number')) for d in history[-12:]]
+        outcomes = [o for o in outcomes if o] # Filter Nones
+        
+        if len(outcomes) < 10: return False
+        
+        switches = 0
+        for i in range(1, len(outcomes)):
+            if outcomes[i] != outcomes[i-1]:
+                switches += 1
+                
+        # If it switched 8 or more times in 12 rounds, it is dangerous.
+        return switches >= 8
+    except: return False
 
 # ==============================================================================
-# SECTION 4: ENGINES (WITH AUTO-MIRROR)
+# SECTION 4: MATHEMATICAL ENGINES (REPLACING AI)
 # ==============================================================================
 
 def engine_quantum_adaptive(history: List[Dict]) -> Optional[Dict]:
@@ -110,8 +97,7 @@ def engine_quantum_adaptive(history: List[Dict]) -> Optional[Dict]:
         if std == 0: return None
         z_score = (numbers[-1] - mean) / std
         
-        # ACTIVE FILTER: 0.13
-        if abs(z_score) < 0.10: return None 
+        if abs(z_score) < 0.13: return None 
         if abs(z_score) > 2.8: return None 
         strength = min(abs(z_score) / 2.5, 1.0) 
         
@@ -121,7 +107,7 @@ def engine_quantum_adaptive(history: List[Dict]) -> Optional[Dict]:
     except: return None
 
 def engine_deep_memory_v4(history: List[Dict]) -> Optional[Dict]:
-    """Scans 500 rounds. Depth 20 (Active Mode)."""
+    """Scans 500 rounds for repeating patterns."""
     try:
         data_len = len(history)
         if data_len < 30: return None
@@ -144,8 +130,7 @@ def engine_deep_memory_v4(history: List[Dict]) -> Optional[Dict]:
             total = count_b + count_s
             if total >= 3:
                 imbalance = abs((count_b/total) - (count_s/total))
-                # ACTIVE FILTER: 0.15
-                if imbalance > highest_confidence and imbalance > 0.11: 
+                if imbalance > highest_confidence and imbalance > 0.15: 
                     highest_confidence = imbalance
                     pred = GameConstants.BIG if count_b > count_s else GameConstants.SMALL
                     best_signal = {'prediction': pred, 'weight': imbalance, 'source': f'DeepMem({depth})'}
@@ -154,111 +139,107 @@ def engine_deep_memory_v4(history: List[Dict]) -> Optional[Dict]:
     except: return None
 
 def engine_chart_patterns(history: List[Dict]) -> Optional[Dict]:
-    """
-    ADVANCED PATTERN RECOGNITION (AUTO-MIRROR ENABLED)
-    Matches history against a library of patterns AND their reverse versions.
-    """
+    """Matches history against technical patterns (Auto-Mirror)."""
     try:
         if len(history) < 20: return None
         outcomes = [get_outcome_from_number(d.get('actual_number')) for d in history[-30:]]
         s = ''.join(['B' if o==GameConstants.BIG else 'S' for o in outcomes if o])
         if not s: return None
 
-        # --- DEFINING THE BASE LIBRARY ---
-        # We only need to define ONE version. The code below will auto-generate the reverse.
         base_patterns = {
-            # BASIC TRENDS
-            '1v1_ZigZag': ['BSBSBS'],
-            '2v2_Double': ['SSBBSSBB'],
-            '3v3_Triple': ['BBBSSSBBB'],
-            '4v4_Quad': ['SSSSBBBBSSSSBBBB'],
-            '3v1_Break': ['BBBSBBB'],
-            '2v1_Break': ['SSBSSB'],
-            '3v2_Break': ['BBBSSBBB'],
-            '4v1_Break': ['SSSSBSSSS'],
-            '4v2_Break': ['BBBBSSBBBB'],
-            'Dragon':   ['BBBBBB', 'BBBBBBBB'], # Will auto-generate 'SSSSSS'
-            
-            # RATIO METHODS
-            '1A1B_Ratio': ['BSBS'],
-            '2A2B_Ratio': ['BBSSBBSS'],
-            '3A3B_Ratio': ['BBBSSSBBB'],
-            '4A4B_Ratio': ['BBBBSSSSBBBB'],
-            '4A1B_Ratio': ['BBBBSBB'],
-            '4A2B_Ratio': ['BBBBSSBB'],
-            '4A3B_Ratio': ['BBBBSSSB'],
-            '1A2B_Ratio': ['BSSBSS'],
-            '1A3B_Ratio': ['BSSS'],
-            '3A2B_Ratio': ['BBBSSBBB'],
-            
-            # ADVANCED SEQUENCES
-            'Stairs':   ['BSBBSSBBBSSS'],
-            'Decay':    ['BBBBBBBBBBS'],
-            'Mirror':   ['BBBBSSBSSBBBB'],
-            'Cut':      ['BSBBBBBBSBBBB'],
-            'Stabilizer': ['BSSBSSBSS'],
-            'Jump':     ['SSBSSSB'],
-            'ZigZag_Road': ['BSBSBSBSB'],
-            'Fib_Streak': ['BSBBSSSBBBBB'],
-            'Wave':     ['BBSBBBSS'],
-            'Overdue':  ['SSSSSSSS'] 
+            'ZigZag': ['BSBSBS'], 'Double': ['SSBBSSBB'], 'Triple': ['BBBSSSBBB'],
+            'Dragon': ['BBBBBB', 'BBBBBBBB'], 'Ratio_1A2B': ['BSSBSS'],
+            'Mirror': ['BBBBSSBSSBBBB'], 'Stairs': ['BSBBSSBBBSSS']
         }
+        best_match = None; max_len = 0
 
-        best_match = None
-        max_len = 0
-
-        # --- AUTO-MIRROR LOGIC ---
-        # Loops through base patterns and creates their INVERSE (B<->S)
         for p_name, p_list in base_patterns.items():
             for p_str in p_list:
                 clean_p = p_str.replace(" ", "")
-                
-                # Create the Inverse (Mirror)
-                # B -> temp, S -> B, temp -> S
                 inverse_p = clean_p.replace('B', 'X').replace('S', 'B').replace('X', 'S')
                 
-                # Check both Original and Inverse
                 for pattern_ver, label_suffix in [(clean_p, ""), (inverse_p, "_Rev")]:
-                    
-                    required_history = pattern_ver[:-1]
-                    prediction_char = pattern_ver[-1]
-                    
-                    if len(required_history) < 3: continue 
-
-                    if s.endswith(required_history):
-                        # Found a match
-                        if len(required_history) > max_len:
-                            max_len = len(required_history)
-                            pred = GameConstants.BIG if prediction_char == 'B' else GameConstants.SMALL
-                            
-                            # Weight calculation (Longer pattern = Higher confidence)
-                            weight = 0.85 + (len(required_history) * 0.01) 
-                            if weight > 0.98: weight = 0.98
-                            
-                            best_match = {
-                                'prediction': pred, 
-                                'weight': weight, 
-                                'source': f'Chart:{p_name}{label_suffix}'
-                            }
-        
+                    required = pattern_ver[:-1]
+                    pred_char = pattern_ver[-1]
+                    if len(required) < 3: continue 
+                    if s.endswith(required):
+                        if len(required) > max_len:
+                            max_len = len(required)
+                            pred = GameConstants.BIG if pred_char == 'B' else GameConstants.SMALL
+                            weight = min(0.85 + (len(required) * 0.01), 0.98)
+                            best_match = {'prediction': pred, 'weight': weight, 'source': f'Chart:{p_name}{label_suffix}'}
         return best_match
-
     except: return None
 
-def engine_neural_perceptron(history: List[Dict]) -> Optional[Dict]:
-    """Detects momentum shifts (Active Mode)."""
+def engine_bayesian_probability(history: List[Dict]) -> Optional[Dict]:
+    """
+    SYNTHETIC AI: BAYESIAN ENGINE
+    Calculates the probability of B/S given the last 4 outcomes based on
+    pure statistical frequency in the provided history.
+    """
     try:
-        numbers = [safe_float(d.get('actual_number')) for d in history[-50:]]
-        if len(numbers) < 25: return None
-        rsi = calculate_rsi(numbers, 14)
-        input_rsi = (rsi - 50) / 100.0 
-        fast = calculate_mean(numbers[-5:]); slow = calculate_mean(numbers[-20:])
-        mom = (fast - slow) / 10.0
-        z = (input_rsi * -1.5) + (mom * 1.2)
-        prob = sigmoid(z) 
-        # ACTIVE FILTER: 0.55
-        if prob > 0.52: return {'prediction': GameConstants.BIG, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
-        elif prob < 0.45: return {'prediction': GameConstants.SMALL, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
+        if len(history) < 50: return None
+        outcomes = [get_outcome_from_number(d.get('actual_number')) for d in history]
+        cleaned = [o[0] for o in outcomes if o] # ['B', 'S', 'B', ...]
+        
+        # Look at the last 4 outcomes as the "Context"
+        context_len = 4
+        if len(cleaned) < context_len + 1: return None
+        
+        last_context = tuple(cleaned[-context_len:]) # e.g., ('B', 'S', 'B', 'B')
+        
+        b_count = 0
+        s_count = 0
+        
+        # Scan history for this exact context
+        for i in range(len(cleaned) - context_len - 1):
+            window = tuple(cleaned[i : i+context_len])
+            if window == last_context:
+                next_val = cleaned[i+context_len]
+                if next_val == 'B': b_count += 1
+                elif next_val == 'S': s_count += 1
+                
+        total = b_count + s_count
+        if total < 3: return None # Not enough data
+        
+        prob_b = b_count / total
+        prob_s = s_count / total
+        
+        # Threshold: 70% probability required
+        if prob_b > 0.70:
+            return {'prediction': GameConstants.BIG, 'weight': prob_b, 'source': f'BayesAI({int(prob_b*100)}%)'}
+        elif prob_s > 0.70:
+            return {'prediction': GameConstants.SMALL, 'weight': prob_s, 'source': f'BayesAI({int(prob_s*100)}%)'}
+            
+        return None
+    except: return None
+
+def engine_momentum_oscillator(history: List[Dict]) -> Optional[Dict]:
+    """
+    SYNTHETIC AI: MOMENTUM OSCILLATOR
+    Measures the 'velocity' of BIG vs SMALL over the last 12 rounds.
+    """
+    try:
+        if len(history) < 20: return None
+        outcomes = [get_outcome_from_number(d.get('actual_number')) for d in history[-12:]]
+        
+        # Scoring: Recent results have higher weight
+        score = 0
+        weight = 1.0
+        for o in reversed(outcomes):
+            if o == GameConstants.BIG: score += weight
+            elif o == GameConstants.SMALL: score -= weight
+            weight *= 0.85 # Decay factor
+            
+        # Interpretation
+        # High Positive Score = Strong BIG Momentum
+        # High Negative Score = Strong SMALL Momentum
+        
+        if score > 1.5:
+             return {'prediction': GameConstants.BIG, 'weight': 0.8, 'source': 'Momentum'}
+        elif score < -1.5:
+             return {'prediction': GameConstants.SMALL, 'weight': 0.8, 'source': 'Momentum'}
+             
         return None
     except: return None
 
@@ -269,7 +250,13 @@ def engine_neural_perceptron(history: List[Dict]) -> Optional[Dict]:
 class GlobalStateManager:
     def __init__(self):
         self.loss_streak = 0
-        self.engine_scores = {'Quantum': 12, 'DeepPattern': 12, 'Chart': 12, 'Neural': 12}
+        self.engine_scores = {
+            'Quantum': 12, 
+            'DeepPattern': 12, 
+            'Chart': 12, 
+            'BayesAI': 15, # Replaces Ollama
+            'Momentum': 12
+        }
         self.last_round_predictions = {} 
         self.skip_streak = 0 
 
@@ -277,7 +264,7 @@ state_manager = GlobalStateManager()
 
 def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_result: Optional[str] = None) -> Dict:
     """
-    TITAN V316 - MIRROR MASTER LOGIC
+    TITAN V600 LOGIC CORE (SYNTHETIC AI)
     """
     # 1. SCORING
     if len(history) > 1:
@@ -294,121 +281,100 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
     if last_result:
         actual_outcome = get_outcome_from_number(history[-1]['actual_number'])
         if last_result != GameConstants.SKIP:
-            if last_result == actual_outcome:
-                state_manager.loss_streak = 0
-            else:
-                state_manager.loss_streak += 1
+            if last_result == actual_outcome: state_manager.loss_streak = 0
+            else: state_manager.loss_streak += 1
     
     streak = state_manager.loss_streak
 
-    # 3. VIOLET GUARD
+    # 3. GUARDS
     try:
         last_num = int(safe_float(history[-1]['actual_number']))
         if last_num in [0, 5]:
             return {'finalDecision': GameConstants.SKIP, 'confidence': 0, 'level': 'VIOLET_GUARD', 
                     'reason': 'Violet Reset', 'topsignals': [], 'positionsize': 0}
+        
+        if is_market_choppy(history):
+            return {'finalDecision': GameConstants.SKIP, 'confidence': 0, 'level': 'CHAOS_GUARD', 
+                    'reason': 'Market too Choppy', 'topsignals': [], 'positionsize': 0}
     except: pass
 
     # 4. RUN ALL ENGINES
     signals = []
-    s_quant = engine_quantum_adaptive(history); 
+    s_quant = engine_quantum_adaptive(history)
+    s_deep = engine_deep_memory_v4(history)
+    s_chart = engine_chart_patterns(history)
+    s_bayes = engine_bayesian_probability(history)
+    s_mom = engine_momentum_oscillator(history)
+
     if s_quant: signals.append(s_quant)
-    s_deep = engine_deep_memory_v4(history); 
     if s_deep: signals.append(s_deep)
-    s_chart = engine_chart_patterns(history); 
     if s_chart: signals.append(s_chart)
-    s_neur = engine_neural_perceptron(history); 
-    if s_neur: signals.append(s_neur)
+    if s_bayes: signals.append(s_bayes)
+    if s_mom: signals.append(s_mom)
 
     current_preds = {
         'Quantum': s_quant['prediction'] if s_quant else None,
         'DeepPattern': s_deep['prediction'] if s_deep else None,
         'Chart': s_chart['prediction'] if s_chart else None,
-        'Neural': s_neur['prediction'] if s_neur else None
+        'BayesAI': s_bayes['prediction'] if s_bayes else None,
+        'Momentum': s_mom['prediction'] if s_mom else None
     }
     state_manager.last_round_predictions = current_preds
 
-    # 5. DECISION LOGIC
+    # 5. DECISION LOGIC (STRICT CONSENSUS)
     final_decision = GameConstants.SKIP
     level_name = "SKIP"
     reason_log = "Analysing Data..."
-    
-    sorted_engines = sorted(state_manager.engine_scores.items(), key=lambda x: x[1], reverse=True)
-    top_engine_name = sorted_engines[0][0]
     
     votes = [s['prediction'] for s in signals]
     vote_counts = Counter(votes)
     most_common, count = vote_counts.most_common(1)[0] if vote_counts else (None, 0)
     
-    # Levels
     is_level_3 = (count >= 3)
     is_level_2 = (count == 2)
-    is_level_1 = (count < 2 and any(current_preds.values()))
-
+    
+    # PRIORITY 1: PERFECT CONSENSUS
     if is_level_3:
         final_decision = most_common
         level_name = "🔥 LEVEL 3 (PERFECT)"
         reason_log = f"Full Consensus ({count} Engines)"
+        
+    # PRIORITY 2: STRONG CONSENSUS
     elif is_level_2:
         final_decision = most_common
-        level_name = "⚡ LEVEL 2 (STRONG)"
-        reason_log = f"2 Engines Agree"
-    elif is_level_1:
-        if current_preds.get(top_engine_name):
-            final_decision = current_preds[top_engine_name]
-            level_name = f"🟢 LEVEL 1 ({top_engine_name.upper()})"
-            reason_log = f"Trusting {top_engine_name}"
+        # Check if "Synthetic AI" (Bayes) is involved
+        if s_bayes and s_bayes['prediction'] == most_common:
+            level_name = "⚡ LEVEL 2 (MATH AI)"
+            reason_log = "Bayes Probability + 1 Engine"
         else:
-            for eng, pred in current_preds.items():
-                if pred:
-                    final_decision = pred
-                    level_name = f"🟢 LEVEL 1 ({eng.upper()})"
-                    reason_log = f"Trusting {eng}"
-                    break
+            level_name = "⚡ LEVEL 2 (STRONG)"
+            reason_log = "2 Standard Engines Agree"
+
+    # PRIORITY 3: LEVEL 1 -> STRICTLY SKIP
+    else:
+        final_decision = GameConstants.SKIP
+        level_name = "⚪ SKIP"
+        reason_log = "No Consensus (Safety First)"
 
     # 6. STAKING LOGIC
     base_bet = max(current_bankroll * RiskConfig.BASE_RISK_PERCENT, RiskConfig.MIN_BET_AMOUNT)
     stake = 0
     
-    if streak == 0 and state_manager.skip_streak >= 5 and final_decision != GameConstants.SKIP:
-        reason_log += " [ACTION]"
-    
     if final_decision != GameConstants.SKIP:
-        
-        # --- PHASE 1: WINNING (Active) ---
         if streak == 0:
-            if "LEVEL 3" in level_name: stake = base_bet * 2.5
+            if "LEVEL 3" in level_name: stake = base_bet * 2.0
             elif "LEVEL 2" in level_name: stake = base_bet * 1.5
-            elif "LEVEL 1" in level_name: stake = base_bet * 1.0 
-        
-        # --- PHASE 2: FIRST LOSS (Recovery) ---
+            else: stake = base_bet * 1.0 
         elif streak == 1:
-            if "LEVEL 2" in level_name or "LEVEL 3" in level_name:
-                 stake = base_bet * RiskConfig.TIER_2_MULT 
-                 level_name = f"⚔️ RECOVERY ({level_name})"
-            else:
-                 return {
-                    'finalDecision': GameConstants.SKIP, 'confidence': 0, 'level': 'WAIT', 
-                    'reason': 'Waiting for Consensus...', 'topsignals': [], 'positionsize': 0
-                }
-
-        # --- PHASE 3: DEEP LOSS (Deep Recovery) ---
+            stake = base_bet * RiskConfig.TIER_2_MULT 
+            level_name = f"⚔️ RECOVERY ({level_name})"
         elif streak >= 2:
-            if "LEVEL 3" in level_name or "LEVEL 2" in level_name:
-                 stake = base_bet * RiskConfig.TIER_3_MULT 
-                 level_name = f"🎯 SNIPER ({level_name})"
-            else:
-                 return {
-                    'finalDecision': GameConstants.SKIP, 'confidence': 0, 'level': 'DEEP_WAIT', 
-                    'reason': 'Waiting for Consensus (2+)...', 'topsignals': [], 'positionsize': 0
-                }
-
-    if stake > 0:
-        state_manager.skip_streak = 0
-    else:
-        state_manager.skip_streak += 1
+            stake = base_bet * RiskConfig.TIER_3_MULT 
+            level_name = f"🎯 SAFE RECOVERY ({level_name})"
 
     if stake > current_bankroll * 0.4: stake = current_bankroll * 0.4
+    if stake > 0: state_manager.skip_streak = 0
+    else: state_manager.skip_streak += 1
 
     return {
         'finalDecision': final_decision if stake > 0 else GameConstants.SKIP,
@@ -420,4 +386,4 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
     }
 
 if __name__ == "__main__":
-    print("TITAN V316 MIRROR MASTER LOADED.")
+    print("TITAN V600 SYNTHETIC AI LOADED.")
