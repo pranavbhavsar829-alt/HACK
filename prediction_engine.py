@@ -8,7 +8,7 @@
     | |   _| |_   | |  | |__| || |\  |
     |_|  |_____|  |_|   \____/ |_| \_|
                                       
-  TITAN V312 - DEEP ANALYST EDITION
+  TITAN V312 - DEEP ANALYST EDITION (MODIFIED V313)
   ==============================================================================
   THE PATIENT LOGIC:
   1. WINNING PHASE: Standard active betting (Level 1/2/3).
@@ -16,8 +16,9 @@
      - STRICT: Skips all "Solo" signals.
      - REQUIREMENT: Must have 2+ Engines agreeing (Level 2).
   3. DEEP RECOVERY (2+ Losses):
-     - ULTRA STRICT: Waits for "Perfect Consensus" (Level 3).
-     - PATIENCE: Will wait 10, 20, or 30 rounds if necessary.
+     - MODIFIED: Accepts "Strong Consensus" (Level 2) or "Perfect" (Level 3).
+     - PREVENTS: The "300+ round wait" by allowing 2 engines to trigger recovery.
+     - SAFETY: Still ignores weak "Solo" signals.
   4. FILTERS: Tightened to 0.25 to ignore market noise.
 ================================================================================
 """
@@ -56,7 +57,7 @@ class RiskConfig:
     # --------------------------------------------------------------------------
     TIER_1_MULT = 1.0   # Standard
     TIER_2_MULT = 2.0   # Recovery (Only on Strong Signal)
-    TIER_3_MULT = 5.0   # Sniper (Only on Perfect Signal)
+    TIER_3_MULT = 5.0   # Sniper (On Strong OR Perfect Signal)
     
     STOP_LOSS_STREAK = 5 
 
@@ -114,7 +115,7 @@ def engine_quantum_adaptive(history: List[Dict]) -> Optional[Dict]:
         z_score = (numbers[-1] - mean) / std
         
         # TIGHTER FILTER: 0.25 (Ignores small noise)
-        if abs(z_score) < 0.10: return None
+        if abs(z_score) < 0.18: return None
         if abs(z_score) > 2.8: return None 
         strength = min(abs(z_score) / 2.5, 1.0) 
         
@@ -325,19 +326,19 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
                     'reason': 'Analyzing for Stronger Signal...', 'topsignals': [], 'positionsize': 0
                 }
 
-        # --- PHASE 3: DEEP LOSS (Deep Analyst) ---
+        # --- PHASE 3: DEEP LOSS (Deep Analyst - MODIFIED) ---
         elif streak >= 2:
             # We are down 2 bets. DANGER ZONE.
-            # REQUIRE PERFECT CONSENSUS (Level 3) ONLY.
-            # We will wait 10, 20 rounds if needed.
-            if "LEVEL 3" in level_name:
+            # MODIFIED: Now accepts Level 2 (Strong) or Level 3 (Perfect).
+            # This prevents waiting 300+ rounds while still avoiding weak "Solo" signals.
+            if "LEVEL 3" in level_name or "LEVEL 2" in level_name:
                  stake = base_bet * RiskConfig.TIER_3_MULT 
                  level_name = f"🎯 SNIPER ({level_name})"
             else:
-                 # We skip Level 2 and Level 1. Only Perfect allowed.
+                 # We still skip Level 1 (Solo signals) to remain safe.
                  return {
                     'finalDecision': GameConstants.SKIP, 'confidence': 0, 'level': 'DEEP_WAIT', 
-                    'reason': 'Waiting for Perfect Consensus...', 'topsignals': [], 'positionsize': 0
+                    'reason': 'Waiting for Strong Consensus (2+ Engines)...', 'topsignals': [], 'positionsize': 0
                 }
 
     # Track Skips
