@@ -266,7 +266,7 @@ async def main_loop():
                             consecutive_wins = 0  # Reset streak so we don't trigger again immediately
                             print(f"\n[TRIGGER] 5 WINS HIT! Engines cooling down for {cooldown_counter} rounds.")
                             
-                        elif consecutive_losses >= 3:
+                        elif consecutive_losses >= 4:
                             cooldown_counter = 8  # Pause for 8 periods (Safe Mode)
                             cooldown_reason = "STOP LOSS (3 Loss)"
                             consecutive_losses = 0
