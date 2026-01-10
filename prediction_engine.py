@@ -8,15 +8,17 @@
     | |   _| |_   | |  | |__| || |\  |
     |_|  |_____|  |_|   \____/ |_| \_|
                                       
-  TITAN V313 - BALANCED GUARDIAN EDITION
+  TITAN V312 - DEEP ANALYST EDITION
   ==============================================================================
-  THE BALANCED LOGIC:
-  1. ACTIVE WINNING: Bets frequently when winning (Streak 0).
-  2. SMART RECOVERY: 
-     - Loss 1: Skips "Trash" signals. Needs Decent Score (>12) to recover.
-     - Loss 2: High Alert. Needs Strong Signal (Level 2/3).
-     - Loss 3: HARD STOP. Prevents further loss chasing.
-  3. FILTERS: Tuned to 0.22 (The "Sweet Spot" between noise and trend).
+  THE PATIENT LOGIC:
+  1. WINNING PHASE: Standard active betting (Level 1/2/3).
+  2. RECOVERY PHASE (1 Loss): 
+     - STRICT: Skips all "Solo" signals.
+     - REQUIREMENT: Must have 2+ Engines agreeing (Level 2).
+  3. DEEP RECOVERY (2+ Losses):
+     - ULTRA STRICT: Waits for "Perfect Consensus" (Level 3).
+     - PATIENCE: Will wait 10, 20, or 30 rounds if necessary.
+  4. FILTERS: Tightened to 0.25 to ignore market noise.
 ================================================================================
 """
 
@@ -34,11 +36,11 @@ class GameConstants:
     BIG = "BIG"
     SMALL = "SMALL" 
     SKIP = "SKIP"
-    MIN_HISTORY_FOR_PREDICTION = 25 
+    MIN_HISTORY_FOR_PREDICTION = 30 # Increased for better data analysis
     DEBUG_MODE = True
 
 # ==============================================================================
-# SECTION 2: RISK & RECOVERY CONFIGURATION
+# SECTION 2: RISK CONFIGURATION
 # ==============================================================================
 
 class RiskConfig:
@@ -50,14 +52,13 @@ class RiskConfig:
     MAX_BET_AMOUNT = 50000
     
     # --------------------------------------------------------------------------
-    # 3-STEP GUARDIAN PLAN
+    # RECOVERY STAKING
     # --------------------------------------------------------------------------
     TIER_1_MULT = 1.0   # Standard
-    TIER_2_MULT = 2.0   # Recovery (Smart)
-    TIER_3_MULT = 4.0   # Final Recovery (Strict)
+    TIER_2_MULT = 2.0   # Recovery (Only on Strong Signal)
+    TIER_3_MULT = 5.0   # Sniper (Only on Perfect Signal)
     
-    # User requested "Under 3" losses -> We stop hard at 3.
-    STOP_LOSS_STREAK = 3 
+    STOP_LOSS_STREAK = 5 
 
 # ==============================================================================
 # SECTION 3: UTILITIES
@@ -100,11 +101,11 @@ def sigmoid(x):
     except OverflowError: return 0.0 if x < 0 else 1.0
 
 # ==============================================================================
-# SECTION 4: ENGINES (BALANCED TUNING)
+# SECTION 4: ENGINES (TIGHTER FILTERS)
 # ==============================================================================
 
 def engine_quantum_adaptive(history: List[Dict]) -> Optional[Dict]:
-    """Detects Trends."""
+    """Detects Trends using Z-Score."""
     try:
         numbers = [safe_float(d.get('actual_number')) for d in history[-60:]]
         if len(numbers) < 20: return None
@@ -112,13 +113,13 @@ def engine_quantum_adaptive(history: List[Dict]) -> Optional[Dict]:
         if std == 0: return None
         z_score = (numbers[-1] - mean) / std
         
-        # BALANCED FILTER: 0.22 (The Sweet Spot)
-        if abs(z_score) < 0.22: return None
-        if abs(z_score) > 3.0: return None 
+        # TIGHTER FILTER: 0.25 (Ignores small noise)
+        if abs(z_score) < 0.18: return None
+        if abs(z_score) > 2.8: return None 
         strength = min(abs(z_score) / 2.5, 1.0) 
         
-        if z_score > 1.1: return {'prediction': GameConstants.SMALL, 'weight': strength, 'source': 'Quantum'}
-        elif z_score < -1.1: return {'prediction': GameConstants.BIG, 'weight': strength, 'source': 'Quantum'}
+        if z_score > 1.2: return {'prediction': GameConstants.SMALL, 'weight': strength, 'source': 'Quantum'}
+        elif z_score < -1.2: return {'prediction': GameConstants.BIG, 'weight': strength, 'source': 'Quantum'}
         return None
     except: return None
 
@@ -146,8 +147,8 @@ def engine_deep_memory_v4(history: List[Dict]) -> Optional[Dict]:
             total = count_b + count_s
             if total >= 3:
                 imbalance = abs((count_b/total) - (count_s/total))
-                # BALANCED FILTER: 0.28
-                if imbalance > highest_confidence and imbalance > 0.28: 
+                # TIGHTER FILTER: 0.30
+                if imbalance > highest_confidence and imbalance > 0.30: 
                     highest_confidence = imbalance
                     pred = GameConstants.BIG if count_b > count_s else GameConstants.SMALL
                     best_signal = {'prediction': pred, 'weight': imbalance, 'source': f'DeepMem({depth})'}
@@ -156,6 +157,7 @@ def engine_deep_memory_v4(history: List[Dict]) -> Optional[Dict]:
     except: return None
 
 def engine_chart_patterns(history: List[Dict]) -> Optional[Dict]:
+    """Recognizes Visual Patterns."""
     try:
         if len(history) < 15: return None
         outcomes = [get_outcome_from_number(d.get('actual_number')) for d in history[-15:]]
@@ -172,6 +174,7 @@ def engine_chart_patterns(history: List[Dict]) -> Optional[Dict]:
     except: return None
 
 def engine_neural_perceptron(history: List[Dict]) -> Optional[Dict]:
+    """Detects momentum shifts."""
     try:
         numbers = [safe_float(d.get('actual_number')) for d in history[-50:]]
         if len(numbers) < 25: return None
@@ -181,28 +184,28 @@ def engine_neural_perceptron(history: List[Dict]) -> Optional[Dict]:
         mom = (fast - slow) / 10.0
         z = (input_rsi * -1.5) + (mom * 1.2)
         prob = sigmoid(z) 
-        # BALANCED FILTER: 0.57/0.43
-        if prob > 0.57: return {'prediction': GameConstants.BIG, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
-        elif prob < 0.43: return {'prediction': GameConstants.SMALL, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
+        # TIGHTER FILTER: 0.60/0.40
+        if prob > 0.60: return {'prediction': GameConstants.BIG, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
+        elif prob < 0.40: return {'prediction': GameConstants.SMALL, 'weight': abs(prob-0.5)*2, 'source': 'Neural'}
         return None
     except: return None
 
 # ==============================================================================
-# SECTION 5: GUARDIAN STATE MANAGER
+# SECTION 5: DEEP ANALYST STATE MANAGER
 # ==============================================================================
 
 class GlobalStateManager:
     def __init__(self):
         self.loss_streak = 0
-        # Engine Scores (10-25 scale)
         self.engine_scores = {'Quantum': 12, 'DeepPattern': 12, 'Chart': 12, 'Neural': 12}
         self.last_round_predictions = {} 
+        self.skip_streak = 0 
 
 state_manager = GlobalStateManager()
 
 def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_result: Optional[str] = None) -> Dict:
     """
-    TITAN V313 - BALANCED GUARDIAN LOGIC
+    TITAN V312 - DEEP ANALYST LOGIC
     """
     # 1. SCORING
     if len(history) > 1:
@@ -234,7 +237,7 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
                     'reason': 'Violet Reset', 'topsignals': [], 'positionsize': 0}
     except: pass
 
-    # 4. RUN ENGINES
+    # 4. RUN ALL ENGINES
     signals = []
     s_quant = engine_quantum_adaptive(history); 
     if s_quant: signals.append(s_quant)
@@ -256,11 +259,10 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
     # 5. DECISION LOGIC
     final_decision = GameConstants.SKIP
     level_name = "SKIP"
-    reason_log = "Scanning..."
+    reason_log = "Analysing Data..."
     
     sorted_engines = sorted(state_manager.engine_scores.items(), key=lambda x: x[1], reverse=True)
     top_engine_name = sorted_engines[0][0]
-    top_engine_score = sorted_engines[0][1]
     
     votes = [s['prediction'] for s in signals]
     vote_counts = Counter(votes)
@@ -280,7 +282,6 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
         level_name = "⚡ LEVEL 2 (STRONG)"
         reason_log = f"2 Engines Agree"
     elif is_level_1:
-        # Pick best available
         if current_preds.get(top_engine_name):
             final_decision = current_preds[top_engine_name]
             level_name = f"🟢 LEVEL 1 ({top_engine_name.upper()})"
@@ -293,55 +294,57 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
                     reason_log = f"Trusting {eng}"
                     break
 
-    # 6. BALANCED STAKING LOGIC
+    # 6. STAKING LOGIC (PATIENT SNIPER)
     base_bet = max(current_bankroll * RiskConfig.BASE_RISK_PERCENT, RiskConfig.MIN_BET_AMOUNT)
     stake = 0
     
+    # Force Skip logic for Boredom Breaker:
+    # Only allowed if NOT losing (Streak 0). 
+    # If we are losing, we DISABLE boredom breaker to ensure quality.
+    if streak == 0 and state_manager.skip_streak >= 8 and final_decision != GameConstants.SKIP:
+        reason_log += " [FORCE ACTION]"
+    
     if final_decision != GameConstants.SKIP:
         
-        # --- STREAK 0: WINNING PHASE ---
+        # --- PHASE 1: WINNING (Active) ---
         if streak == 0:
-            # Active Mode: Bet on everything decent to keep streak alive
             if "LEVEL 3" in level_name: stake = base_bet * 2.5
             elif "LEVEL 2" in level_name: stake = base_bet * 1.5
             elif "LEVEL 1" in level_name: stake = base_bet * 1.0 
         
-        # --- STREAK 1: SMART RECOVERY ---
+        # --- PHASE 2: FIRST LOSS (Cautious) ---
         elif streak == 1:
-            # Requires Score > 12 OR Level 2/3. (Skips low quality Level 1)
+            # NO SOLO BETS. Must be Consensus (Level 2) or Level 3.
             if "LEVEL 2" in level_name or "LEVEL 3" in level_name:
                  stake = base_bet * RiskConfig.TIER_2_MULT 
                  level_name = f"⚔️ RECOVERY ({level_name})"
-            elif top_engine_score >= 12: 
-                 stake = base_bet * RiskConfig.TIER_2_MULT
-                 level_name = f"⚔️ RECOVERY ({level_name})"
             else:
-                 # SKIP TRASH
+                 # Signal too weak for recovery.
                  return {
-                    'finalDecision': GameConstants.SKIP, 'confidence': 0, 'level': 'SMART_WAIT', 
-                    'reason': 'Skipping Weak Signal (Protecting Streak)...', 'topsignals': [], 'positionsize': 0
+                    'finalDecision': GameConstants.SKIP, 'confidence': 0, 'level': 'WAIT', 
+                    'reason': 'Analyzing for Stronger Signal...', 'topsignals': [], 'positionsize': 0
                 }
 
-        # --- STREAK 2: GUARDIAN MODE ---
-        elif streak == 2:
-            # Critical Moment. Only Level 2 or 3 Allowed.
-            if "LEVEL 2" in level_name or "LEVEL 3" in level_name:
+        # --- PHASE 3: DEEP LOSS (Deep Analyst) ---
+        elif streak >= 2:
+            # We are down 2 bets. DANGER ZONE.
+            # REQUIRE PERFECT CONSENSUS (Level 3) ONLY.
+            # We will wait 10, 20 rounds if needed.
+            if "LEVEL 3" in level_name:
                  stake = base_bet * RiskConfig.TIER_3_MULT 
-                 level_name = f"🛡️ GUARDIAN ({level_name})"
+                 level_name = f"🎯 SNIPER ({level_name})"
             else:
-                 # SKIP LEVEL 1
+                 # We skip Level 2 and Level 1. Only Perfect allowed.
                  return {
                     'finalDecision': GameConstants.SKIP, 'confidence': 0, 'level': 'DEEP_WAIT', 
-                    'reason': 'Guardian Mode: Waiting for Strong Signal...', 'topsignals': [], 'positionsize': 0
+                    'reason': 'Waiting for Perfect Consensus...', 'topsignals': [], 'positionsize': 0
                 }
 
-        # --- STREAK 3: HARD STOP ---
-        elif streak >= 3:
-            # User requested "Under 3 possible". We stop here.
-            return {
-                'finalDecision': GameConstants.SKIP, 'confidence': 0, 'level': 'STOP_LOSS', 
-                'reason': 'Max Loss Streak Reached. Pausing...', 'topsignals': [], 'positionsize': 0
-            }
+    # Track Skips
+    if stake > 0:
+        state_manager.skip_streak = 0
+    else:
+        state_manager.skip_streak += 1
 
     # Safety Cap
     if stake > current_bankroll * 0.4: stake = current_bankroll * 0.4
@@ -356,4 +359,4 @@ def ultraAIPredict(history: List[Dict], current_bankroll: float = 10000.0, last_
     }
 
 if __name__ == "__main__":
-    print("TITAN V313 BALANCED GUARDIAN LOADED.")
+    print("TITAN V312 DEEP ANALYST LOADED.")
